@@ -91,9 +91,21 @@ When running WebTransport locally (`make run-ingress-k8s`), the backend uses TLS
 
 ---
 
+## ERR_METHOD_NOT_SUPPORTED
+
+If the browser shows **`Failed to establish a connection to https://wt.talos-hz.thaidevops.co/: net::ERR_METHOD_NOT_SUPPORTED`** (and then **Opening handshake failed**):
+
+- **Cause:** The host you’re connecting to is **not** speaking WebTransport. The server (or proxy) at that URL is accepting HTTPS but does **not** support the WebTransport handshake (HTTP/3 + extended CONNECT). It may be a normal HTTP/1.1 or HTTP/2 server that only allows GET/POST, so the WebTransport “method” is rejected.
+- **Correct endpoint:** The URL in `app.webtransport.publicUrl` must point to a **real WebTransport/HTTP/3 server** (or a proxy that forwards QUIC to one). That is either:
+  - Your **pertisk-kube** WebTransport server, reachable directly (e.g. `https://wt.talos-hz.thaidevops.co:50052` if the LB exposes UDP 50052 to the backend), or
+  - A **reverse proxy** (e.g. pt-rproxy) that is explicitly configured to handle WebTransport for this host and forward to the backend’s WebTransport port.
+- **If the proxy doesn’t support WebTransport yet:** Unset `app.webtransport.publicUrl` (or set it to `""`) so the frontend does not try WebTransport and uses **WebSocket** for realtime over the main dashboard host.
+
+---
+
 ## "Opening handshake failed" (WebTransportError)
 
-If the browser shows **`WebTransportError: Opening handshake failed`** when connecting to your WebTransport URL (e.g. `https://wt.talos-hz.thaidevops.co/wt`):
+If the browser shows **`WebTransportError: Opening handshake failed`** when connecting to your WebTransport URL (e.g. `https://wt.talos-hz.thaidevops.co/` or `https://wt.talos-hz.thaidevops.co/wt`):
 
 The **opening handshake** is the HTTP/3 + WebTransport session setup (TLS, then WebTransport extended CONNECT). Failure usually means one of:
 
@@ -151,13 +163,14 @@ After fixing, redeploy and ensure UDP 8443 is open in any firewall between the c
 - Rebuild the frontend **without** `VITE_WEBTRANSPORT_URL`. Realtime will use WebSocket (`/ws`) over the same host/port (8091), which the ingress already forwards.
 - No ingress or LoadBalancer changes.
 
-### B. Expose WebTransport on a separate port
+### B. Expose WebTransport on a separate port (direct)
 
-- **WebTransport uses QUIC over UDP.** The Service and Deployment declare the webtransport port as **UDP** (not TCP). Your LoadBalancer or node port must also forward **UDP** 8443 to the cluster; if only TCP is exposed, you get `ERR_QUIC_PROTOCOL_ERROR` / `QUIC_NETWORK_IDLE_TIMEOUT` (no packets reach the server).
-- Expose **UDP** 4433/8443 on the LoadBalancer and route it to `pertisk-kube:8443` (controller-specific config).
-- **Runtime config (no rebuild):** Set backend env **`WEBTRANSPORT_PUBLIC_URL`** (e.g. Helm `app.webtransport.publicUrl: "https://wt.example.com:8443"`). The frontend reads it from `GET /api/config`.
-- **Build-time:** Alternatively set `VITE_WEBTRANSPORT_URL=https://...` at frontend build time.
-- Browsers will connect to the given URL for WebTransport; ensure firewall and LB allow **UDP** on that port.
+When you deploy with ports **8091/TCP, 50051/TCP, 50052/UDP** exposed (e.g. main Service type LoadBalancer or NodePort), traffic must be **directed** to the WebTransport port:
+
+- **`publicUrl` must include the port.** Set `app.webtransport.publicUrl` to `https://wt.talos-hz.thaidevops.co:50052` (or your host with `:50052`). If you omit the port, the browser uses 443 and the connection does not reach the WebTransport server.
+- **Optional: dedicated LoadBalancer for WebTransport.** Set `app.webtransport.exposeLoadBalancer: true` to create a second Service (e.g. `pertisk-kube-webtransport`) of type LoadBalancer that exposes only **50052/UDP**. Use the assigned external IP (or DNS pointing to it) in `publicUrl`, e.g. `https://wt.talos-hz.thaidevops.co:50052`.
+- **WebTransport uses QUIC over UDP.** The Service declares the webtransport port as **UDP**. Your LB must expose **UDP** on that port; if only TCP is exposed, you get `ERR_QUIC_PROTOCOL_ERROR` / `QUIC_NETWORK_IDLE_TIMEOUT`.
+- Ensure firewall and LB allow **UDP** on the WebTransport port (e.g. 50052).
 
 ### C. Ingress-level WebTransport/HTTP/3 to backend 4433
 

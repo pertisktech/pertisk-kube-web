@@ -40,6 +40,12 @@ spec:
       securityContext:
         {{- toYaml .Values.app.podSecurityContext | nindent 8 }}
       {{- end }}
+      {{- if and .Values.app.webtransport.enabled .Values.app.webtransport.tlsSecretName }}
+      volumes:
+        - name: webtransport-tls
+          secret:
+            secretName: {{ .Values.app.webtransport.tlsSecretName | quote }}
+      {{- end }}
       containers:
         - name: pertisk-kube
           image: "{{ .Values.app.image.registry }}/{{ .Values.app.image.repository }}:{{ .Values.app.image.tag }}"
@@ -75,6 +81,12 @@ spec:
             {{- if .Values.app.webtransport.enabled }}
             - name: WEBTRANSPORT_PORT
               value: {{ .Values.app.service.webtransportTargetPort | default 4433 | quote }}
+            {{- if .Values.app.webtransport.tlsSecretName }}
+            - name: WEBTRANSPORT_TLS_CERT
+              value: "/app/certs/wt/tls.crt"
+            - name: WEBTRANSPORT_TLS_KEY
+              value: "/app/certs/wt/tls.key"
+            {{- end }}
             {{- end }}
             {{- if .Values.app.webtransport.publicUrl }}
             - name: WEBTRANSPORT_PUBLIC_URL
@@ -114,6 +126,12 @@ spec:
           {{- if .Values.app.resources }}
           resources:
             {{- toYaml .Values.app.resources | nindent 12 }}
+          {{- end }}
+          {{- if and .Values.app.webtransport.enabled .Values.app.webtransport.tlsSecretName }}
+          volumeMounts:
+            - name: webtransport-tls
+              mountPath: /app/certs/wt
+              readOnly: true
           {{- end }}
           {{- if .Values.app.securityContext }}
           securityContext:

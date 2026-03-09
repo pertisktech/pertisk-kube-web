@@ -1,0 +1,20 @@
+{{- /* Expose WebTransport (UDP 50052) via LoadBalancer so clients can connect directly. Point publicUrl to https://<LB-IP-or-host>:50052 */}}
+{{- if and .Values.app.webtransport.enabled .Values.app.webtransport.exposeLoadBalancer }}
+apiVersion: v1
+kind: Service
+metadata:
+  name: {{ include "pertisk-kube.fullname" . }}-webtransport
+  namespace: {{ .Release.Namespace }}
+  labels:
+    {{- include "pertisk-kube.labels" . | nindent 4 }}
+    app: {{ .Values.app.name }}
+spec:
+  type: LoadBalancer
+  selector:
+    app: {{ .Values.app.name }}
+  ports:
+    - name: webtransport
+      port: {{ .Values.app.service.webtransportPort }}
+      targetPort: {{ .Values.app.service.webtransportTargetPort }}
+      protocol: UDP
+{{- end }}

@@ -41,12 +41,16 @@ async function getFrontendConfig(): Promise<FrontendConfig> {
 /** Effective WebTransport URL: runtime config (WEBTRANSPORT_PUBLIC_URL) or build-time (VITE_WEBTRANSPORT_URL). */
 function normalizeWebTransportUrl(raw: string): string | null {
   if (!raw || typeof raw !== 'string' || raw.trim() === '') return null;
-  const trimmed = raw.trim();
+  let trimmed = raw.trim();
   if (window.location.protocol !== 'https:' && window.location.hostname !== 'localhost' && window.location.hostname !== '127.0.0.1') {
     return null;
   }
   if (trimmed.startsWith('/')) {
     return `${window.location.origin}${trimmed}`;
+  }
+  // WebTransport requires a full URL (e.g. https://host/path). If only hostname or host:port, prepend https://
+  if (!/^https?:\/\//i.test(trimmed)) {
+    trimmed = `https://${trimmed}`;
   }
   return trimmed;
 }

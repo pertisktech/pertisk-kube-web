@@ -32,8 +32,14 @@ app:
   # Set publicUrl so the frontend gets the WebTransport URL from GET /api/config (no rebuild needed).
   webtransport:
     enabled: true
-    # Public URL for WebTransport (e.g. https://wt.example.com:50052). Exposed as WEBTRANSPORT_PUBLIC_URL; frontend reads it from /api/config.
-    publicUrl: "wt.talos-hz.thaidevops.co"  # e.g. "https://wt.talos-hz.thaidevops.co:50052"
+    # Public URL for WebTransport. Must point to a server that speaks HTTP/3 + WebTransport (or a proxy that forwards to it).
+    # When exposing WT directly (exposeLoadBalancer or main Service LoadBalancer): include :port (e.g. https://wt.example.com:50052).
+    publicUrl: "https://wt.talos-hz.thaidevops.co"  # include :50052 when traffic is directed to exposed port 50052
+    # TLS for WebTransport server: mount cert from this secret (must have tls.crt and tls.key). Same idea as local run with certs/.
+    # If set, backend uses these certs instead of self-signed; hostname in cert should match publicUrl host.
+    tlsSecretName: "admin-talos-hz-tls"  # e.g. "admin-talos-hz-tls" or "" to use self-signed
+    # Expose WebTransport (UDP) via a dedicated LoadBalancer so external clients can connect to port 50052. Set publicUrl to https://<host>:50052.
+    exposeLoadBalancer: false  # set true to create a second Service (LoadBalancer) for 50052/UDP only
   env:
     rustLog: info
   auth:
