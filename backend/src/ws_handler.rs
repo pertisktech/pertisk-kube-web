@@ -27,7 +27,7 @@ use crate::AppState;
 
 #[derive(Debug, Clone, Deserialize)]
 #[serde(tag = "type", rename_all = "snake_case")]
-enum ClientMessage {
+pub(crate) enum ClientMessage {
     Subscribe { resource: String },
     Unsubscribe { resource: String },
     Ping,
@@ -35,7 +35,7 @@ enum ClientMessage {
 
 #[derive(Debug, Clone, Serialize)]
 #[serde(tag = "type", rename_all = "snake_case")]
-enum ServerMessage {
+pub(crate) enum ServerMessage {
     ResourceUpdate {
         resource: String,
         action: String,
@@ -552,64 +552,7 @@ async fn handle_socket(socket: WebSocket, state: AppState) {
                             let _ = tx.send(response).await;
 
                             // Start watching resource based on type
-                            let state_clone = state.clone();
-                            let tx_clone = tx.clone();
-                            let resource_clone = resource.clone();
-                            
-                            tokio::spawn(async move {
-                                match resource_clone.as_str() {
-                                    "pods" => watch_pods(state_clone, tx_clone).await,
-                                    "namespaces" => watch_namespaces(state_clone, tx_clone).await,
-                                    "deployments" => watch_deployments(state_clone, tx_clone).await,
-                                    "statefulsets" => watch_statefulsets(state_clone, tx_clone).await,
-                                    "daemonsets" => watch_daemonsets(state_clone, tx_clone).await,
-                                    "replicasets" => watch_replicasets(state_clone, tx_clone).await,
-                                    "jobs" => watch_jobs(state_clone, tx_clone).await,
-                                    "cronjobs" => watch_cronjobs(state_clone, tx_clone).await,
-                                    "events" => watch_events(state_clone, tx_clone).await,
-                                    "nodes" => watch_nodes(state_clone, tx_clone).await,
-                                    "services" => watch_services(state_clone, tx_clone).await,
-                                    "configmaps" => watch_configmaps(state_clone, tx_clone).await,
-                                    "secrets" => watch_secrets(state_clone, tx_clone).await,
-                                    "resourcequotas" => watch_resourcequotas(state_clone, tx_clone).await,
-                                    "limitranges" => watch_limitranges(state_clone, tx_clone).await,
-                                    "hpa" => watch_hpa(state_clone, tx_clone).await,
-                                    "pdb" => watch_pdb(state_clone, tx_clone).await,
-                                    "ingresses" => watch_ingresses(state_clone, tx_clone).await,
-                                    "ingressclasses" => watch_ingressclasses(state_clone, tx_clone).await,
-                                    "endpoints" => watch_endpoints(state_clone, tx_clone).await,
-                                    "networkpolicies" => watch_networkpolicies(state_clone, tx_clone).await,
-                                    "persistentvolumes" => watch_persistentvolumes(state_clone, tx_clone).await,
-                                    "persistentvolumeclaims" => watch_persistentvolumeclaims(state_clone, tx_clone).await,
-                                    "storageclasses" => watch_storageclasses(state_clone, tx_clone).await,
-                                    "serviceaccounts" => watch_serviceaccounts(state_clone, tx_clone).await,
-                                    "clusterroles" => watch_clusterroles(state_clone, tx_clone).await,
-                                    "clusterrolebindings" => watch_clusterrolebindings(state_clone, tx_clone).await,
-                                    "roles" => watch_roles(state_clone, tx_clone).await,
-                                    "rolebindings" => watch_rolebindings(state_clone, tx_clone).await,
-                                    "priorityclasses" => watch_priorityclasses(state_clone, tx_clone).await,
-                                    "runtimeclasses" => watch_runtimeclasses(state_clone, tx_clone).await,
-                                    "leases" => watch_leases(state_clone, tx_clone).await,
-                                    "mwc" => watch_mwcs(state_clone, tx_clone).await,
-                                    "vwc" => watch_vwcs(state_clone, tx_clone).await,
-                                    "crds" => watch_crds(state_clone, tx_clone).await,
-                                    _ if resource_clone.starts_with("customresources/") => {
-                                        let crd_name = resource_clone.strip_prefix("customresources/").unwrap_or("").to_string();
-                                        if crd_name.is_empty() {
-                                            let _ = tx_clone.send(ServerMessage::Error { message: "customresources/ requires CRD name".into() }).await;
-                                        } else {
-                                            watch_custom_resources(state_clone, tx_clone, &resource_clone, &crd_name).await;
-                                        }
-                                    }
-                                    _ => {
-                                        error!("Unknown resource type: {}", resource_clone);
-                                        let msg = ServerMessage::Error {
-                                            message: format!("Unknown resource type: {}", resource_clone),
-                                        };
-                                        let _ = tx_clone.send(msg).await;
-                                    }
-                                }
-                            });
+                            spawn_watch_for_resource(state.clone(), tx.clone(), resource);
                         }
                         ClientMessage::Unsubscribe { resource } => {
                             info!("Client unsubscribing from {}", resource);
@@ -643,7 +586,85 @@ async fn handle_socket(socket: WebSocket, state: AppState) {
     info!("WebSocket handler completed: {}", connection_id);
 }
 
-async fn watch_pods(
+/// Spawns the appropriate K8s watcher for the given resource type. Used by both WebSocket and WebTransport handlers.
+pub(crate) fn spawn_watch_for_resource(
+    state: AppState,
+    tx: tokio::sync::mpsc::Sender<ServerMessage>,
+    resource: String,
+) {
+    let state_clone = state.clone();
+    let tx_clone = tx.clone();
+    let resource_clone = resource.clone();
+    tokio::spawn(async move {
+        match resource_clone.as_str() {
+            "pods" => watch_pods(state_clone, tx_clone).await,
+            "namespaces" => watch_namespaces(state_clone, tx_clone).await,
+            "deployments" => watch_deployments(state_clone, tx_clone).await,
+            "statefulsets" => watch_statefulsets(state_clone, tx_clone).await,
+            "daemonsets" => watch_daemonsets(state_clone, tx_clone).await,
+            "replicasets" => watch_replicasets(state_clone, tx_clone).await,
+            "jobs" => watch_jobs(state_clone, tx_clone).await,
+            "cronjobs" => watch_cronjobs(state_clone, tx_clone).await,
+            "events" => watch_events(state_clone, tx_clone).await,
+            "nodes" => watch_nodes(state_clone, tx_clone).await,
+            "services" => watch_services(state_clone, tx_clone).await,
+            "configmaps" => watch_configmaps(state_clone, tx_clone).await,
+            "secrets" => watch_secrets(state_clone, tx_clone).await,
+            "resourcequotas" => watch_resourcequotas(state_clone, tx_clone).await,
+            "limitranges" => watch_limitranges(state_clone, tx_clone).await,
+            "hpa" => watch_hpa(state_clone, tx_clone).await,
+            "pdb" => watch_pdb(state_clone, tx_clone).await,
+            "ingresses" => watch_ingresses(state_clone, tx_clone).await,
+            "ingressclasses" => watch_ingressclasses(state_clone, tx_clone).await,
+            "endpoints" => watch_endpoints(state_clone, tx_clone).await,
+            "networkpolicies" => watch_networkpolicies(state_clone, tx_clone).await,
+            "persistentvolumes" => watch_persistentvolumes(state_clone, tx_clone).await,
+            "persistentvolumeclaims" => watch_persistentvolumeclaims(state_clone, tx_clone).await,
+            "storageclasses" => watch_storageclasses(state_clone, tx_clone).await,
+            "serviceaccounts" => watch_serviceaccounts(state_clone, tx_clone).await,
+            "clusterroles" => watch_clusterroles(state_clone, tx_clone).await,
+            "clusterrolebindings" => watch_clusterrolebindings(state_clone, tx_clone).await,
+            "roles" => watch_roles(state_clone, tx_clone).await,
+            "rolebindings" => watch_rolebindings(state_clone, tx_clone).await,
+            "priorityclasses" => watch_priorityclasses(state_clone, tx_clone).await,
+            "runtimeclasses" => watch_runtimeclasses(state_clone, tx_clone).await,
+            "leases" => watch_leases(state_clone, tx_clone).await,
+            "mwc" => watch_mwcs(state_clone, tx_clone).await,
+            "vwc" => watch_vwcs(state_clone, tx_clone).await,
+            "crds" => watch_crds(state_clone, tx_clone).await,
+            _ if resource_clone.starts_with("customresources/") => {
+                let crd_name = resource_clone
+                    .strip_prefix("customresources/")
+                    .unwrap_or("")
+                    .to_string();
+                if crd_name.is_empty() {
+                    let _ = tx_clone
+                        .send(ServerMessage::Error {
+                            message: "customresources/ requires CRD name".into(),
+                        })
+                        .await;
+                } else {
+                    watch_custom_resources(
+                        state_clone,
+                        tx_clone,
+                        &resource_clone,
+                        &crd_name,
+                    )
+                    .await;
+                }
+            }
+            _ => {
+                error!("Unknown resource type: {}", resource_clone);
+                let msg = ServerMessage::Error {
+                    message: format!("Unknown resource type: {}", resource_clone),
+                };
+                let _ = tx_clone.send(msg).await;
+            }
+        }
+    });
+}
+
+pub(crate) async fn watch_pods(
     state: AppState,
     tx: tokio::sync::mpsc::Sender<ServerMessage>,
 ) {
@@ -765,7 +786,7 @@ async fn watch_pods(
 // Generic macro to create watch functions for any K8s resource type
 macro_rules! create_watch_fn {
     ($fn_name:ident, $resource_type:ty, $resource_name:expr) => {
-        async fn $fn_name(
+        pub(crate) async fn $fn_name(
             state: AppState,
             tx: tokio::sync::mpsc::Sender<ServerMessage>,
         ) {
@@ -910,7 +931,7 @@ fn vwc_api_resource() -> ApiResource {
     )
 }
 
-async fn watch_dynamic_cluster_resource(
+pub(crate) async fn watch_dynamic_cluster_resource(
     state: AppState,
     tx: tokio::sync::mpsc::Sender<ServerMessage>,
     ar: ApiResource,
@@ -996,15 +1017,15 @@ async fn watch_dynamic_cluster_resource(
     }
 }
 
-async fn watch_mwcs(state: AppState, tx: tokio::sync::mpsc::Sender<ServerMessage>) {
+pub(crate) async fn watch_mwcs(state: AppState, tx: tokio::sync::mpsc::Sender<ServerMessage>) {
     watch_dynamic_cluster_resource(state, tx, mwc_api_resource(), "mwc").await;
 }
 
-async fn watch_vwcs(state: AppState, tx: tokio::sync::mpsc::Sender<ServerMessage>) {
+pub(crate) async fn watch_vwcs(state: AppState, tx: tokio::sync::mpsc::Sender<ServerMessage>) {
     watch_dynamic_cluster_resource(state, tx, vwc_api_resource(), "vwc").await;
 }
 
-async fn watch_custom_resources(
+pub(crate) async fn watch_custom_resources(
     state: AppState,
     tx: tokio::sync::mpsc::Sender<ServerMessage>,
     resource_name: &str,

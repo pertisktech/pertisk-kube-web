@@ -1,0 +1,42 @@
+{{- /* Second domain for WebTransport: host -> backend webtransport port. Ingress controller must use TLS/QUIC passthrough for this host so the backend receives the raw connection. */}}
+{{- if and .Values.app.webtransport.enabled .Values.ingressWebtransport.enabled }}
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: {{ include "pertisk-kube.fullname" . }}-webtransport
+  namespace: {{ .Release.Namespace }}
+  labels:
+    {{- include "pertisk-kube.labels" . | nindent 4 }}
+  annotations:
+    {{- with .Values.ingressWebtransport.annotations }}
+    {{- toYaml . | nindent 4 }}
+    {{- end }}
+    {{- /* Controller-specific: e.g. nginx.ingress.kubernetes.io/ssl-passthrough: "true" if your controller supports it for this host */}}
+spec:
+  {{- if .Values.ingressWebtransport.className }}
+  ingressClassName: {{ .Values.ingressWebtransport.className }}
+  {{- end }}
+  {{- if .Values.ingressWebtransport.tls }}
+  tls:
+    {{- range .Values.ingressWebtransport.tls }}
+    - hosts:
+        {{- range .hosts }}
+        - {{ . | quote }}
+        {{- end }}
+      secretName: {{ .secretName }}
+    {{- end }}
+  {{- end }}
+  rules:
+    {{- range .Values.ingressWebtransport.hosts }}
+    - host: {{ .host | quote }}
+      http:
+        paths:
+          - path: /
+            pathType: Prefix
+            backend:
+              service:
+                name: {{ $.Values.app.name }}
+                port:
+                  number: {{ $.Values.app.service.webtransportPort }}
+    {{- end }}
+{{- end }}

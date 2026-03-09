@@ -19,3 +19,10 @@ spec:
       port: {{ .Values.app.service.grpcPort }}
       targetPort: {{ .Values.app.service.grpcTargetPort }}
       protocol: TCP
+    {{- if .Values.app.webtransport.enabled }}
+    # WebTransport (QUIC) uses UDP; TCP here would not reach the server.
+    - name: webtransport
+      port: {{ .Values.app.service.webtransportPort }}
+      targetPort: {{ .Values.app.service.webtransportTargetPort }}
+      protocol: UDP
+    {{- end }}

@@ -25,6 +25,15 @@ app:
     targetPort: 8091
     grpcPort: 50051
     grpcTargetPort: 50051
+    # WebTransport (QUIC over UDP): port must be exposed as UDP in Service/LB so QUIC packets reach the pod.
+    webtransportPort: 50052
+    webtransportTargetPort: 50052
+  # WebTransport: enable server and optional public URL for frontend (from env).
+  # Set publicUrl so the frontend gets the WebTransport URL from GET /api/config (no rebuild needed).
+  webtransport:
+    enabled: true
+    # Public URL for WebTransport (e.g. https://wt.example.com:50052). Exposed as WEBTRANSPORT_PUBLIC_URL; frontend reads it from /api/config.
+    publicUrl: "wt.talos-hz.thaidevops.co"  # e.g. "https://wt.talos-hz.thaidevops.co:50052"
   env:
     rustLog: info
   auth:
@@ -84,7 +93,7 @@ app:
     successThreshold: 1
     failureThreshold: 3
 
-# Ingress configuration
+# Ingress: single domain (one host, path /). Template adds WebSocket annotations for /ws and /api/exec.
 ingress:
   enabled: false
   className: nginx
@@ -102,6 +111,22 @@ ingress:
 
 ingressGrpc:
   enabled: false
+
+# Optional: second domain for WebTransport (e.g. wt.dashboard.example.com → backend 8443).
+# Backend must have TLS cert for this host (WEBTRANSPORT_HOSTNAMES or cert). Ingress controller
+# should use TLS/QUIC passthrough for this host so backend receives the raw connection.
+# Optional: set app.webtransport.publicUrl so frontend gets the URL from /api/config (no rebuild).
+# Or build frontend with VITE_WEBTRANSPORT_URL=https://<host below>.
+ingressWebtransport:
+  enabled: true
+  className: "pertisk-rproxy"
+  annotations: {}
+  hosts:
+    - host: wt.talos-hz.thaidevops.co
+  tls:
+    - secretName: admin-talos-hz-tls
+      hosts:
+        - "*.pertisk-kube.example.com"
 
 # PodDisruptionBudget — keeps at least 1 pod available during node drains / rolling updates
 pdb:

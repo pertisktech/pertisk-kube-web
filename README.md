@@ -86,8 +86,10 @@ This project is structured as a **single workspace**:
 
 ### Real-Time Features
 
-#### WebSocket live updates (`/ws` – Kubernetes watch)
-Resource list pages subscribe over a single WebSocket and receive watch events (add/update/delete). No polling; list updates as soon as the cluster state changes.
+#### Realtime updates (WebTransport or WebSocket)
+Resource list pages use **WebTransport** when available (HTTPS + `WEBTRANSPORT_PORT` on the backend), otherwise **WebSocket** (`/ws`). Both use the same JSON protocol (subscribe / resource_update). No polling; list updates as soon as the cluster state changes.
+
+The WebTransport URL can be set **at runtime** via backend env **`WEBTRANSPORT_PUBLIC_URL`** (e.g. in Helm: `app.webtransport.publicUrl`). The frontend fetches `GET /api/config` and uses `webtransport_url` when present; otherwise it uses the build-time **`VITE_WEBTRANSPORT_URL`**.
 
 - **Workloads:** Deployments, StatefulSets, DaemonSets, ReplicaSets, Jobs, CronJobs, **Pods** (list from watch; CPU/memory merged from REST)
 - **Cluster:** Namespaces, **Nodes**, Events
@@ -210,12 +212,14 @@ make helm-install
 # or deploy after building image
 make helm-deploy
 
-# Or manually
+# Or manually (chart must be a path like ./helm/pertisk-kube, not just "pertisk-kube")
 helm install pertisk-kube ./helm/pertisk-kube \
   -n pertisk-rproxy \
   --create-namespace \
   --set app.image.tag=latest
 ```
+
+If you see `Error: non-absolute URLs should be in form of repo_name/path_to_chart, got: pertisk-kube`, use the chart **path** `./helm/pertisk-kube` (or `helm/pertisk-kube` from repo root), not the chart name alone.
 
 ### Docker
 
@@ -286,9 +290,17 @@ All API routes are under `/api`. Protected routes require `Authorization: Bearer
 - **Helm releases:** `GET /api/helm/releases`, `GET /api/helm/releases/:namespace/:name/yaml`, `GET .../history`, `POST .../rollback`, `POST .../upgrade`, `DELETE ...`
 - **Helm charts:** `GET /api/helm/charts`, `GET /api/helm/charts/versions`, `GET /api/helm/charts/values`, `GET /api/helm/charts/readme`, `POST /api/helm/charts/install`
 
-### WebSocket
-- `WS /ws` – Real-time resource streaming (gRPC-Web)
-- `WS /api/exec` – Pod exec terminal
+### Realtime (WebTransport & WebSocket)
+- **WebTransport** (optional) – When `WEBTRANSPORT_PORT` is set (e.g. 4433), backend runs a WebTransport server; frontend uses it over HTTPS when supported, with WebSocket fallback.
+- `WS /ws` – Real-time resource streaming (subscribe/watch; used when WebTransport is unavailable)
+- `WS /api/exec` – Pod exec terminal (WebSocket only)
+
+### Single-domain reverse proxy
+Use one host and path `/` so all traffic goes through the same domain (e.g. `https://pertisk-kube.example.com/`).
+
+- **HTTP/HTTPS:** Proxy forwards `/`, `/api`, `/assets`, etc. to the app (port 8091).
+- **WebSocket:** Proxy must forward `Upgrade: websocket` for `/ws` and `/api/exec` to the same backend. The Helm ingress template sets `nginx.ingress.kubernetes.io/proxy-read-timeout`, `proxy-send-timeout`, and `websocket-services` so nginx-ingress does this when using one host and path `/`.
+- **WebTransport (optional):** Path-based WebTransport (e.g. `VITE_WEBTRANSPORT_URL=/wt` → `https://host/wt`) **does not work** behind most reverse proxies: WebTransport uses HTTP/3 (QUIC), and nginx/traefik typically do not proxy WebTransport on a path, so you get "Opening handshake failed". For single-domain behind a standard proxy, **omit `VITE_WEBTRANSPORT_URL`** and use WebSocket only. To use WebTransport you can: (1) expose a **second domain** via `ingressWebtransport` (e.g. `wt.dashboard.example.com` → backend 8443; ingress controller should use TLS/QUIC passthrough for that host), or (2) expose a separate port (e.g. `https://host:8443`).
 
 ### Frontend routes (SPA)
 

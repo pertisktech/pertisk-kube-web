@@ -72,6 +72,14 @@ spec:
                 secretKeyRef:
                   name: {{ include "pertisk-kube.fullname" . }}-auth
                   key: jwt-secret
+            {{- if .Values.app.webtransport.enabled }}
+            - name: WEBTRANSPORT_PORT
+              value: {{ .Values.app.service.webtransportTargetPort | default 4433 | quote }}
+            {{- end }}
+            {{- if .Values.app.webtransport.publicUrl }}
+            - name: WEBTRANSPORT_PUBLIC_URL
+              value: {{ .Values.app.webtransport.publicUrl | quote }}
+            {{- end }}
             {{- if .Values.leaderElection.enabled }}
             - name: LEADER_ELECTION_ENABLED
               value: "true"
@@ -85,6 +93,12 @@ spec:
             - name: grpc
               containerPort: {{ .Values.app.service.grpcTargetPort }}
               protocol: TCP
+            {{- if .Values.app.webtransport.enabled }}
+            # WebTransport (QUIC) listens on UDP
+            - name: webtransport
+              containerPort: {{ .Values.app.service.webtransportTargetPort | default 4433 }}
+              protocol: UDP
+            {{- end }}
           {{- if .Values.app.startupProbe }}
           startupProbe:
             {{- toYaml .Values.app.startupProbe | nindent 12 }}

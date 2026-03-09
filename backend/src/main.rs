@@ -19,6 +19,7 @@ use tracing_subscriber::EnvFilter;
 mod grpc_service;
 mod proto;
 mod ws_handler;
+mod wt_handler;
 
 pub mod auth;
 pub mod handlers;
@@ -85,6 +86,7 @@ async fn main() -> anyhow::Result<()> {
     let public_api = Router::new()
         .route("/health", get(health))
         .route("/readiness", get(readiness))
+        .route("/config", get(frontend_config))
         .route("/login", post(login));
 
     let refresh_api = Router::new()
@@ -344,7 +346,7 @@ async fn main() -> anyhow::Result<()> {
         .route_service("/favicon.svg", ServeFile::new(favicon_svg))
         .route_service("/", ServeFile::new(index_html.clone()))
         .fallback_service(ServeFile::new(index_html))
-        .with_state(state)
+        .with_state(state.clone())
         .layer(cors);
 
     let addr: SocketAddr = ([0, 0, 0, 0], 8091).into();
@@ -362,13 +364,58 @@ async fn main() -> anyhow::Result<()> {
         .add_service(tonic_web::enable(grpc_service))
         .serve(grpc_addr);
 
-    // Run both servers concurrently
+    // Optional WebTransport server (set WEBTRANSPORT_PORT, e.g. 4433; requires HTTPS)
+    let wt_port = env::var("WEBTRANSPORT_PORT").ok().and_then(|s| s.parse::<u16>().ok()).unwrap_or(0);
+    if wt_port > 0 {
+        let wt_state = state.clone();
+        let cert_path = env::var("WEBTRANSPORT_TLS_CERT")
+            .ok()
+            .zip(env::var("WEBTRANSPORT_TLS_KEY").ok());
+        let hostnames: Vec<String> = env::var("WEBTRANSPORT_HOSTNAMES")
+            .unwrap_or_else(|_| "localhost".to_string())
+            .split(',')
+            .map(|s| s.trim().to_string())
+            .filter(|s| !s.is_empty())
+            .collect();
+        let hostnames = if hostnames.is_empty() {
+            vec!["localhost".to_string()]
+        } else {
+            hostnames
+        };
+        tokio::spawn(async move {
+            if let Err(e) = wt_handler::run_webtransport_server(wt_state, wt_port, cert_path, hostnames).await {
+                error!("WebTransport server error: {}", e);
+            }
+        });
+    } else {
+        info!("WebTransport disabled (set WEBTRANSPORT_PORT to enable, e.g. 4433)");
+    }
+
+    // Run HTTP and gRPC servers concurrently
     tokio::try_join!(
         async { http_server.await.map_err(|e| anyhow::anyhow!(e)) },
         async { grpc_server.await.map_err(|e| anyhow::anyhow!(e)) }
     )?;
 
     Ok(())
+}
+
+/// Frontend config: public URL for WebTransport (from env WEBTRANSPORT_PUBLIC_URL).
+/// Allows runtime config so the same image can be deployed with different URLs.
+#[derive(serde::Serialize)]
+struct FrontendConfig {
+    #[serde(skip_serializing_if = "Option::is_none")]
+    webtransport_url: Option<String>,
+}
+
+async fn frontend_config() -> impl IntoResponse {
+    let url = env::var("WEBTRANSPORT_PUBLIC_URL")
+        .ok()
+        .filter(|s| !s.trim().is_empty());
+    let body = FrontendConfig {
+        webtransport_url: url,
+    };
+    (StatusCode::OK, Json(body))
 }
 
 async fn health() -> impl IntoResponse {

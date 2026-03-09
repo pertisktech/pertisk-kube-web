@@ -36,6 +36,7 @@ import {
   CustomResource,
   Crd,
 } from '../types';
+import { openRealtimeConnection } from '../transport/realtimeTransport';
 
 interface WebSocketMessage {
   type: string;
@@ -869,53 +870,25 @@ function createRealtimeHook<T>(
     const [error, setError] = useState<string | null>(null);
 
     useEffect(() => {
-      let ws: WebSocket | null = null;
+      let closeConnection: (() => void) | null = null;
       let reconnectTimeout: ReturnType<typeof setTimeout>;
-      let messageQueue: WebSocketMessage[] = [];
 
       const connect = () => {
         try {
-          // WebSocket URL construction
-          const protocol = window.location.protocol === 'https:' ? 'wss' : 'ws';
-          const host = window.location.host;
-          const wsUrl = `${protocol}://${host}/ws`;
-
-          ws = new WebSocket(wsUrl);
-
-          ws.onopen = () => {
-            if (isRealtimeDebug()) console.log(`WebSocket connected for ${displayName}`);
-            setError(null);
-
-            // Subscribe to resource
-            ws!.send(
-              JSON.stringify({
-                type: 'subscribe',
-                resource: resourceType,
-              })
-            );
-
-            // Flush queued messages if any
-            while (messageQueue.length > 0) {
-              const msg = messageQueue.shift();
-              if (msg) {
-                ws!.send(JSON.stringify(msg));
-              }
-            }
-
-            setIsLoading(false);
-          };
-
-          ws.onmessage = (event) => {
-            try {
-              const message: WebSocketMessage = JSON.parse(event.data);
-
-              if (message.type === 'resource_update' && message.resource === resourceType) {
-                const action = message.action?.toUpperCase();
-                const rawItem = message.data;
+          closeConnection = openRealtimeConnection(resourceType, {
+            onOpen: () => {
+              if (isRealtimeDebug()) console.log(`Realtime connected for ${displayName}`);
+              setError(null);
+              setIsLoading(false);
+            },
+            onMessage: (message: Record<string, unknown>) => {
+              const msg = message as unknown as WebSocketMessage;
+              if (msg.type === 'resource_update' && msg.resource === resourceType) {
+                const action = (msg.action as string)?.toUpperCase();
+                const rawItem = msg.data;
 
                 if (!rawItem) return;
 
-                // Transform raw K8s object to frontend format
                 const item = transformFn(rawItem);
 
                 if (action === 'ADDED' || action === 'MODIFIED') {
@@ -924,49 +897,39 @@ function createRealtimeHook<T>(
                     const existingIndex = prev.findIndex((p) => getKey(p) === itemKey);
 
                     if (existingIndex >= 0) {
-                      // Update existing item
                       const updated = [...prev];
                       updated[existingIndex] = item;
                       return updated;
-                    } else {
-                      // Add new item
-                      return [...prev, item];
                     }
+                    return [...prev, item];
                   });
                 } else if (action === 'DELETED') {
                   const itemKey = getKey(item);
                   setData((prev) => prev.filter((p) => getKey(p) !== itemKey));
                 }
-              } else if (message.type === 'subscribed' && message.resource === resourceType) {
+              } else if (msg.type === 'subscribed' && msg.resource === resourceType) {
                 if (isRealtimeDebug()) console.log(`Subscribed to ${displayName}`);
-              } else if (message.type === 'error') {
-                console.error(`WebSocket error for ${displayName}:`, message.message);
-                setError(message.message || 'Unknown error');
+              } else if (msg.type === 'error') {
+                console.error(`Realtime error for ${displayName}:`, msg.message);
+                setError((msg.message as string) || 'Unknown error');
               }
-            } catch (e) {
-              console.error(`Error parsing ${displayName} message:`, e);
-            }
-          };
-
-          ws.onerror = (event) => {
-            console.error(`WebSocket error for ${displayName}:`, event);
-            setError(`Connection error for ${displayName}`);
-          };
-
-          ws.onclose = () => {
-            if (isRealtimeDebug()) console.log(`WebSocket disconnected for ${displayName}`);
-
-            // Attempt to reconnect after 3 seconds
-            reconnectTimeout = setTimeout(() => {
-              if (isRealtimeDebug()) console.log(`Attempting to reconnect to ${displayName}...`);
-              connect();
-            }, 3000);
-          };
+            },
+            onError: (event) => {
+              console.error(`Realtime error for ${displayName}:`, event);
+              setError(`Connection error for ${displayName}`);
+            },
+            onClose: () => {
+              if (isRealtimeDebug()) console.log(`Realtime disconnected for ${displayName}`);
+              closeConnection = null;
+              reconnectTimeout = setTimeout(() => {
+                if (isRealtimeDebug()) console.log(`Attempting to reconnect to ${displayName}...`);
+                connect();
+              }, 3000);
+            },
+          });
         } catch (err) {
-          console.error(`Failed to connect WebSocket for ${displayName}:`, err);
+          console.error(`Failed to connect realtime for ${displayName}:`, err);
           setError(`Failed to connect to ${displayName} stream`);
-
-          // Attempt to reconnect
           reconnectTimeout = setTimeout(connect, 3000);
         }
       };
@@ -974,12 +937,8 @@ function createRealtimeHook<T>(
       connect();
 
       return () => {
-        if (reconnectTimeout) {
-          clearTimeout(reconnectTimeout);
-        }
-        if (ws) {
-          ws.close();
-        }
+        clearTimeout(reconnectTimeout);
+        closeConnection?.();
       };
     }, []);
 
@@ -1214,25 +1173,20 @@ export function useRealtimeCustomResources(crdName: string | null): {
       setIsLoading(false);
       return;
     }
-    let ws: WebSocket | null = null;
+    let closeConnection: (() => void) | null = null;
     let reconnectTimeout: ReturnType<typeof setTimeout>;
     const connect = () => {
       try {
-        const protocol = window.location.protocol === 'https:' ? 'wss' : 'ws';
-        const host = window.location.host;
-        const wsUrl = `${protocol}://${host}/ws`;
-        ws = new WebSocket(wsUrl);
-        ws.onopen = () => {
-          setError(null);
-          ws!.send(JSON.stringify({ type: 'subscribe', resource: resourceType }));
-          setIsLoading(false);
-        };
-        ws.onmessage = (event) => {
-          try {
-            const message: WebSocketMessage = JSON.parse(event.data);
-            if (message.type === 'resource_update' && message.resource === resourceType && message.data) {
-              const action = (message.action || '').toUpperCase();
-              const item = transformCustomResource(message.data);
+        closeConnection = openRealtimeConnection(resourceType, {
+          onOpen: () => {
+            setError(null);
+            setIsLoading(false);
+          },
+          onMessage: (message: Record<string, unknown>) => {
+            const msg = message as unknown as WebSocketMessage;
+            if (msg.type === 'resource_update' && msg.resource === resourceType && msg.data) {
+              const action = ((msg.action as string) || '').toUpperCase();
+              const item = transformCustomResource(msg.data);
               const itemKey = getCustomResourceKey(item);
               if (action === 'ADDED' || action === 'MODIFIED') {
                 setData((prev) => {
@@ -1247,17 +1201,16 @@ export function useRealtimeCustomResources(crdName: string | null): {
               } else if (action === 'DELETED') {
                 setData((prev) => prev.filter((p) => getCustomResourceKey(p) !== itemKey));
               }
-            } else if (message.type === 'error') {
-              setError(message.message || 'Unknown error');
+            } else if (msg.type === 'error') {
+              setError((msg.message as string) || 'Unknown error');
             }
-          } catch (e) {
-            console.error('Custom resource message parse error:', e);
-          }
-        };
-        ws.onerror = () => setError('Connection error');
-        ws.onclose = () => {
-          reconnectTimeout = setTimeout(connect, 3000);
-        };
+          },
+          onError: () => setError('Connection error'),
+          onClose: () => {
+            closeConnection = null;
+            reconnectTimeout = setTimeout(connect, 3000);
+          },
+        });
       } catch (err) {
         setError('Failed to connect');
         reconnectTimeout = setTimeout(connect, 3000);
@@ -1266,7 +1219,7 @@ export function useRealtimeCustomResources(crdName: string | null): {
     connect();
     return () => {
       clearTimeout(reconnectTimeout);
-      ws?.close();
+      closeConnection?.();
     };
   }, [crdName, resourceType]);
 

@@ -1,5 +1,6 @@
 import { useEffect, useState, useRef, useCallback } from 'react';
 import { getAuthToken } from '../utils/auth';
+import { openRealtimeConnection } from '../transport/realtimeTransport';
 
 export type ResourceType = 'pods' | 'deployments' | 'services' | 'nodes';
 
@@ -314,7 +315,7 @@ export const useRealtimePods = <T>(options: UseRealtimePodsOptions = {}) => {
   const [data, setData] = useState<T[]>([]);
   const [isConnected, setIsConnected] = useState(false);
   const [error, setError] = useState<string | null>(null);
-  const wsRef = useRef<WebSocket | null>(null);
+  const closeConnectionRef = useRef<(() => void) | null>(null);
   const reconnectTimeoutRef = useRef<number>();
   const reconnectAttemptsRef = useRef(0);
   const maxReconnectAttempts = 10;
@@ -376,230 +377,149 @@ export const useRealtimePods = <T>(options: UseRealtimePodsOptions = {}) => {
   const connect = useCallback(() => {
     if (!enabled) return;
 
-    const protocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
-    const host = window.location.hostname;
-    const port = window.location.port ? `:${window.location.port}` : '';
-    const wsUrl = `${protocol}//${host}${port}/ws`;
-
     try {
-      const ws = new WebSocket(wsUrl);
-
-      ws.onopen = () => {
-        if (isRealtimeDebug()) console.log('[useRealtimePods] WebSocket connected');
-        setIsConnected(true);
-        setError(null);
-        reconnectAttemptsRef.current = 0;
-
-        // Subscribe to pods
-        ws.send(JSON.stringify({
-          type: 'subscribe',
-          resource: 'pods'
-        }));
-      };
-
-      ws.onmessage = (event) => {
-        try {
-          const message = JSON.parse(event.data);
-
-          if (message.type === 'resource_update' && message.resource === 'pods') {
-            const { action, data: rawPodData } = message;
-            const transformedPod = transformPod(rawPodData);
-            
-            // Debug log for status changes (dev only)
-            if (isRealtimeDebug() && (transformedPod.status === 'NotReady' ||
-                transformedPod.status === 'ContainerStarting' ||
-                transformedPod.status === 'Terminating')) {
-              console.log(`[useRealtimePods] ${action} pod: ${transformedPod.namespace}/${transformedPod.name} - Status: ${transformedPod.status}, Ready: ${transformedPod.ready}`);
+      closeConnectionRef.current = openRealtimeConnection('pods', {
+        onOpen: () => {
+          if (isRealtimeDebug()) console.log('[useRealtimePods] Realtime connected');
+          setIsConnected(true);
+          setError(null);
+          reconnectAttemptsRef.current = 0;
+        },
+        onMessage: (message: Record<string, unknown>) => {
+          if (message.type !== 'resource_update' || message.resource !== 'pods') {
+            if (message.type === 'subscribed') {
+              if (isRealtimeDebug()) console.log('[useRealtimePods] Subscription confirmed');
+            } else if (message.type === 'error') {
+              console.error('[useRealtimePods] Server error:', message.message);
+              setError(message.message as string);
             }
-
-            setData((prevData) => {
-              switch (action) {
-                case 'ADDED':
-                  const podKey = `${transformedPod.namespace}/${transformedPod.name}`;
-                  
-                  // Don't add if pod was deleted
-                  if (deletedPodsRef.current.has(podKey)) {
-                    if (isRealtimeDebug()) console.log(`[useRealtimePods] Ignoring ADDED for deleted pod: ${podKey}`);
-                    return prevData;
-                  }
-                  
-                  // Check if already exists
-                  const exists = prevData.some((item: any) => {
-                    const itemRaw = item as any;
-                    return itemRaw.name === transformedPod.name && 
-                           itemRaw.namespace === transformedPod.namespace;
-                  });
-                  if (exists) {
-                    // Update existing pod instead of skipping
-                    return prevData.map((item: any) => {
-                      const itemRaw = item as any;
-                      return (itemRaw.name === transformedPod.name && 
-                             itemRaw.namespace === transformedPod.namespace) 
-                        ? (transformedPod as T) 
-                        : item;
-                    });
-                  }
-                  return [...prevData, transformedPod as T];
-                
-                case 'MODIFIED':
-                  const modPodKey = `${transformedPod.namespace}/${transformedPod.name}`;
-                  
-                  // Don't modify if pod was deleted
-                  if (deletedPodsRef.current.has(modPodKey)) {
-                    if (isRealtimeDebug()) console.log(`[useRealtimePods] Ignoring MODIFIED for deleted pod: ${modPodKey}`);
-                    return prevData;
-                  }
-                  
-                  // Upsert pattern: update if exists, add if not
-                  const foundIndex = prevData.findIndex((item: any) => {
-                    const itemRaw = item as any;
-                    return itemRaw.name === transformedPod.name && 
-                           itemRaw.namespace === transformedPod.namespace;
-                  });
-                  
-                  if (foundIndex >= 0) {
-                    // Update existing
-                    const updated = [...prevData];
-                    const oldStatus = (updated[foundIndex] as any).status;
-                    const existingPod = updated[foundIndex] as any;
-                    // Preserve metrics and metadata from last API sync if websocket update returns '-'
-                    const keepOrFallback = (val: unknown, existing: unknown) =>
-                      val !== '-' && val !== undefined && val !== null && val !== '' ? val : (existing != null && existing !== '' ? existing : '-');
-                    const mergedPod = {
-                      ...transformedPod,
-                      cpu: keepOrFallback(transformedPod.cpu, existingPod.cpu),
-                      memory: keepOrFallback(transformedPod.memory, existingPod.memory),
-                      controlled_by: transformedPod.controlled_by !== '-' ? transformedPod.controlled_by : (existingPod.controlled_by || '-'),
-                      qos: transformedPod.qos !== '-' ? transformedPod.qos : (existingPod.qos || '-'),
-                    };
-                    updated[foundIndex] = mergedPod as T;
-                    
-                    // Log status transitions (dev only)
-                    if (oldStatus !== mergedPod.status) {
-                      if (isRealtimeDebug()) console.log(`[useRealtimePods] Status transition for ${modPodKey}: ${oldStatus} -> ${mergedPod.status}`);
-                      
-                      // If transitioning to Terminating, keep it visible until DELETED event
-                      if (mergedPod.status === 'Terminating') {
-                        // Clear any existing timeout
-                        const existingTimeout = deletionTimeoutsRef.current.get(modPodKey);
-                        if (existingTimeout) {
-                          clearTimeout(existingTimeout);
-                          deletionTimeoutsRef.current.delete(modPodKey);
-                        }
-                      }
-                    }
-                    
-                    return updated;
-                  } else {
-                    // Add new (pod wasn't in initial list)
-                    if (isRealtimeDebug()) console.log(`[useRealtimePods] Adding pod from MODIFIED: ${modPodKey} (status: ${transformedPod.status})`);
-                    const newList = [...prevData, transformedPod as T];
-                    
-                    // Keep terminating pods until DELETED event
-                    if (transformedPod.status === 'Terminating') {
-                      const existingTimeout = deletionTimeoutsRef.current.get(modPodKey);
-                      if (existingTimeout) {
-                        clearTimeout(existingTimeout);
-                        deletionTimeoutsRef.current.delete(modPodKey);
-                      }
-                    }
-                    
-                    return newList;
-                  }
-                
-                case 'DELETED':
-                  const podKeyForDeletion = `${transformedPod.namespace}/${transformedPod.name}`;
-                  if (isRealtimeDebug()) console.log(`[useRealtimePods] Deleting pod immediately: ${podKeyForDeletion}`);
-                  
-                  // Mark as deleted to prevent re-adding
-                  deletedPodsRef.current.add(podKeyForDeletion);
-                  
-                  // Clear any pending auto-removal timeout
-                  const existingTimeout = deletionTimeoutsRef.current.get(podKeyForDeletion);
-                  if (existingTimeout) {
-                    clearTimeout(existingTimeout);
-                    deletionTimeoutsRef.current.delete(podKeyForDeletion);
-                  }
-                  
-                  // Remove immediately - no delay
-                  const finalFiltered = prevData.filter((item: any) => {
-                    const itemRaw = item as any;
-                    return !(itemRaw.name === transformedPod.name && 
-                            itemRaw.namespace === transformedPod.namespace);
-                  });
-                  
-                  if (isRealtimeDebug()) console.log(`[useRealtimePods] Pod count: ${prevData.length} -> ${finalFiltered.length}`);
-                  
-                  // Keep deleted marker very briefly so stale events do not re-add old pod,
-                  // but new same-name pod can appear quickly.
-                  setTimeout(() => {
-                    deletedPodsRef.current.delete(podKeyForDeletion);
-                  }, 500);
-                  
-                  return finalFiltered;
-                
-                default:
-                  return prevData;
-              }
-            });
-          } else if (message.type === 'subscribed') {
-            if (isRealtimeDebug()) console.log('[useRealtimePods] Subscription confirmed');
-          } else if (message.type === 'error') {
-            console.error('[useRealtimePods] Server error:', message.message);
-            setError(message.message);
+            return;
           }
-        } catch (err) {
-          console.error('[useRealtimePods] Failed to parse message:', err);
-        }
-      };
+          const action = message.action as string;
+          const rawPodData = message.data;
+          const transformedPod = transformPod(rawPodData);
 
-      ws.onerror = (errorEvent) => {
-        console.error('[useRealtimePods] WebSocket error:', errorEvent);
-        setError('WebSocket connection error');
-      };
+          if (isRealtimeDebug() && (transformedPod.status === 'NotReady' ||
+              transformedPod.status === 'ContainerStarting' ||
+              transformedPod.status === 'Terminating')) {
+            console.log(`[useRealtimePods] ${action} pod: ${transformedPod.namespace}/${transformedPod.name} - Status: ${transformedPod.status}, Ready: ${transformedPod.ready}`);
+          }
 
-      ws.onclose = () => {
-        if (isRealtimeDebug()) console.log('[useRealtimePods] WebSocket closed');
-        setIsConnected(false);
-        wsRef.current = null;
-
-        // Attempt reconnection
-        if (
-          enabled &&
-          reconnectAttemptsRef.current < maxReconnectAttempts
-        ) {
-          reconnectAttemptsRef.current += 1;
-          if (isRealtimeDebug()) console.log(
-            `[useRealtimePods] Reconnecting... (attempt ${reconnectAttemptsRef.current}/${maxReconnectAttempts})`
-          );
-          reconnectTimeoutRef.current = setTimeout(() => {
-            connect();
-          }, reconnectInterval);
-        } else if (reconnectAttemptsRef.current >= maxReconnectAttempts) {
-          setError('Max reconnection attempts reached');
-        }
-      };
-
-      wsRef.current = ws;
+          setData((prevData) => {
+            switch (action) {
+              case 'ADDED': {
+                const podKey = `${transformedPod.namespace}/${transformedPod.name}`;
+                if (deletedPodsRef.current.has(podKey)) {
+                  if (isRealtimeDebug()) console.log(`[useRealtimePods] Ignoring ADDED for deleted pod: ${podKey}`);
+                  return prevData;
+                }
+                const exists = prevData.some((item: any) => {
+                  const itemRaw = item as any;
+                  return itemRaw.name === transformedPod.name && itemRaw.namespace === transformedPod.namespace;
+                });
+                if (exists) {
+                  return prevData.map((item: any) => {
+                    const itemRaw = item as any;
+                    return (itemRaw.name === transformedPod.name && itemRaw.namespace === transformedPod.namespace)
+                      ? (transformedPod as T) : item;
+                  });
+                }
+                return [...prevData, transformedPod as T];
+              }
+              case 'MODIFIED': {
+                const modPodKey = `${transformedPod.namespace}/${transformedPod.name}`;
+                if (deletedPodsRef.current.has(modPodKey)) {
+                  if (isRealtimeDebug()) console.log(`[useRealtimePods] Ignoring MODIFIED for deleted pod: ${modPodKey}`);
+                  return prevData;
+                }
+                const foundIndex = prevData.findIndex((item: any) => {
+                  const itemRaw = item as any;
+                  return itemRaw.name === transformedPod.name && itemRaw.namespace === transformedPod.namespace;
+                });
+                if (foundIndex >= 0) {
+                  const updated = [...prevData];
+                  const oldStatus = (updated[foundIndex] as any).status;
+                  const existingPod = updated[foundIndex] as any;
+                  const keepOrFallback = (val: unknown, existing: unknown) =>
+                    val !== '-' && val !== undefined && val !== null && val !== '' ? val : (existing != null && existing !== '' ? existing : '-');
+                  const mergedPod = {
+                    ...transformedPod,
+                    cpu: keepOrFallback(transformedPod.cpu, existingPod.cpu),
+                    memory: keepOrFallback(transformedPod.memory, existingPod.memory),
+                    controlled_by: transformedPod.controlled_by !== '-' ? transformedPod.controlled_by : (existingPod.controlled_by || '-'),
+                    qos: transformedPod.qos !== '-' ? transformedPod.qos : (existingPod.qos || '-'),
+                  };
+                  updated[foundIndex] = mergedPod as T;
+                  if (oldStatus !== mergedPod.status && isRealtimeDebug()) {
+                    console.log(`[useRealtimePods] Status transition for ${modPodKey}: ${oldStatus} -> ${mergedPod.status}`);
+                  }
+                  if (mergedPod.status === 'Terminating') {
+                    const existingTimeout = deletionTimeoutsRef.current.get(modPodKey);
+                    if (existingTimeout) {
+                      clearTimeout(existingTimeout);
+                      deletionTimeoutsRef.current.delete(modPodKey);
+                    }
+                  }
+                  return updated;
+                }
+                if (isRealtimeDebug()) console.log(`[useRealtimePods] Adding pod from MODIFIED: ${modPodKey} (status: ${transformedPod.status})`);
+                return [...prevData, transformedPod as T];
+              }
+              case 'DELETED': {
+                const podKeyForDeletion = `${transformedPod.namespace}/${transformedPod.name}`;
+                if (isRealtimeDebug()) console.log(`[useRealtimePods] Deleting pod immediately: ${podKeyForDeletion}`);
+                deletedPodsRef.current.add(podKeyForDeletion);
+                const existingTimeout = deletionTimeoutsRef.current.get(podKeyForDeletion);
+                if (existingTimeout) {
+                  clearTimeout(existingTimeout);
+                  deletionTimeoutsRef.current.delete(podKeyForDeletion);
+                }
+                const finalFiltered = prevData.filter((item: any) => {
+                  const itemRaw = item as any;
+                  return !(itemRaw.name === transformedPod.name && itemRaw.namespace === transformedPod.namespace);
+                });
+                if (isRealtimeDebug()) console.log(`[useRealtimePods] Pod count: ${prevData.length} -> ${finalFiltered.length}`);
+                setTimeout(() => deletedPodsRef.current.delete(podKeyForDeletion), 500);
+                return finalFiltered;
+              }
+              default:
+                return prevData;
+            }
+          });
+        },
+        onError: (errorEvent) => {
+          console.error('[useRealtimePods] Realtime error:', errorEvent);
+          setError('Realtime connection error');
+        },
+        onClose: () => {
+          if (isRealtimeDebug()) console.log('[useRealtimePods] Realtime closed');
+          setIsConnected(false);
+          closeConnectionRef.current = null;
+          if (enabled && reconnectAttemptsRef.current < maxReconnectAttempts) {
+            reconnectAttemptsRef.current += 1;
+            if (isRealtimeDebug()) console.log(
+              `[useRealtimePods] Reconnecting... (attempt ${reconnectAttemptsRef.current}/${maxReconnectAttempts})`
+            );
+            reconnectTimeoutRef.current = window.setTimeout(() => connect(), reconnectInterval);
+          } else if (reconnectAttemptsRef.current >= maxReconnectAttempts) {
+            setError('Max reconnection attempts reached');
+          }
+        },
+      });
     } catch (err) {
-      console.error('[useRealtimePods] Failed to create WebSocket:', err);
-      setError('Failed to create WebSocket connection');
+      console.error('[useRealtimePods] Failed to create realtime connection:', err);
+      setError('Failed to create realtime connection');
     }
   }, [enabled, reconnectInterval]);
 
   const disconnect = useCallback(() => {
-    if (wsRef.current) {
-      wsRef.current.close();
-      wsRef.current = null;
-    }
+    closeConnectionRef.current?.();
+    closeConnectionRef.current = null;
     if (reconnectTimeoutRef.current) {
       clearTimeout(reconnectTimeoutRef.current);
     }
-    
-    // Clear all pending deletion timeouts
     deletionTimeoutsRef.current.forEach(timeout => clearTimeout(timeout));
     deletionTimeoutsRef.current.clear();
-    
     setIsConnected(false);
   }, []);
 

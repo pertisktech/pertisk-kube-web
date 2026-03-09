@@ -60,6 +60,8 @@ The following table lists the configurable parameters:
 | `app.image.tag` | Image tag | `latest` |
 | `app.service.port` | Service port | `8091` |
 | `app.env.rustLog` | Rust logging level | `info` |
+| `app.webtransport.enabled` | Enable WebTransport server | `false` |
+| `app.webtransport.publicUrl` | Public WebTransport URL (frontend reads from `/api/config`; env `WEBTRANSPORT_PUBLIC_URL`) | `""` |
 | `ingress.enabled` | Enable ingress | `true` |
 | `ingress.hosts` | Ingress hosts | `[pertisk-kube.example.com]` |
 | `rbac.create` | Create RBAC resources | `true` |

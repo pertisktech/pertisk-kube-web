@@ -14,6 +14,8 @@ BASE_IMAGE_PREFIX ?= $(DOCKER_REGISTRY)/pertisksoft/pertisk-kube/web-base
 BASE_TAG ?= latest
 HELM_RELEASE ?= pertisk-kube
 HELM_NAMESPACE ?= pertisk-rproxy
+# Chart path (use ./helm/pertisk-kube or repo/chart; do not use bare name or Helm errors with "non-absolute URLs")
+HELM_CHART ?= ./helm/pertisk-kube
 # App port (must match helm/pertisk-kube/values.yaml app.service.port)
 APP_PORT ?= 8091
 GRPC_PORT ?= 50051
@@ -74,10 +76,12 @@ run-ingress-k8s: tools frontend-build
 		echo "Using local k8s kubeconfig: $(K8S_KUBECONFIG)"; \
 		KUBECONFIG="$(K8S_KUBECONFIG)" \
 		STATIC_DIR=frontend/dist \
+		WEBTRANSPORT_PORT=4433 \
 		cargo watch -x 'run -p pertisk-kube-backend'; \
 	else \
 		echo "k8s kubeconfig not found at $(K8S_KUBECONFIG); using current kubeconfig context instead."; \
 		STATIC_DIR=frontend/dist \
+		WEBTRANSPORT_PORT=4433 \
 		cargo watch -x 'run -p pertisk-kube-backend'; \
 	fi
 
@@ -167,15 +171,15 @@ docker-push-multi: docker-build-multi
 
 # Helm targets
 helm-template:
-	helm template $(HELM_RELEASE) ./helm/pertisk-kube -n $(HELM_NAMESPACE)
+	helm template $(HELM_RELEASE) $(HELM_CHART) -n $(HELM_NAMESPACE)
 
 helm-install:
-	helm install $(HELM_RELEASE) ./helm/pertisk-kube -n $(HELM_NAMESPACE) --create-namespace \
+	helm install $(HELM_RELEASE) $(HELM_CHART) -n $(HELM_NAMESPACE) --create-namespace \
 		--set app.image.tag=$(DOCKER_TAG)
 	@echo "✓ Installed $(HELM_RELEASE) with version $(DOCKER_TAG)"
 
 helm-upgrade:
-	helm upgrade $(HELM_RELEASE) ./helm/pertisk-kube -n $(HELM_NAMESPACE) \
+	helm upgrade $(HELM_RELEASE) $(HELM_CHART) -n $(HELM_NAMESPACE) \
 		--set app.image.tag=$(DOCKER_TAG)
 	@echo "✓ Upgraded $(HELM_RELEASE) to version $(DOCKER_TAG)"
 
@@ -209,7 +213,7 @@ port-forward:
 # Build, push multi-arch Docker image and deploy with Helm
 helm-deploy: docker-build-multi
 	@echo "Deploying pertisk-kube with image tag $(DOCKER_TAG)..."
-	helm upgrade --install $(HELM_RELEASE) ./helm/pertisk-kube -n $(HELM_NAMESPACE) \
+	helm upgrade --install $(HELM_RELEASE) $(HELM_CHART) -n $(HELM_NAMESPACE) \
 		--create-namespace \
 		--set app.image.tag=$(DOCKER_TAG)
 	@echo "✓ Deployed pertisk-kube version $(DOCKER_TAG)"
