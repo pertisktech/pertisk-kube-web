@@ -34,7 +34,7 @@ app:
     enabled: true
     # Public URL for WebTransport. Must point to a server that speaks HTTP/3 + WebTransport (or a proxy that forwards to it).
     # When exposing WT directly (exposeLoadBalancer or main Service LoadBalancer): include :port (e.g. https://wt.example.com:50052).
-    publicUrl: "https://wt.talos-hz.thaidevops.co"  # include :50052 when traffic is directed to exposed port 50052
+    publicUrl: "https://wt.talos-hz.thaidevops.co:50052"  # must include :50052 so browser connects to WT port (not 443)
     # TLS for WebTransport server: mount cert from this secret (must have tls.crt and tls.key). Same idea as local run with certs/.
     # If set, backend uses these certs instead of self-signed; hostname in cert should match publicUrl host.
     tlsSecretName: "admin-talos-hz-tls"  # e.g. "admin-talos-hz-tls" or "" to use self-signed

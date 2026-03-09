@@ -409,7 +409,7 @@ struct FrontendConfig {
 }
 
 async fn frontend_config() -> impl IntoResponse {
-    let url = env::var("WEBTRANSPORT_PUBLIC_URL")
+    let mut url = env::var("WEBTRANSPORT_PUBLIC_URL")
         .ok()
         .filter(|s| !s.trim().is_empty())
         .or_else(|| {
@@ -420,6 +420,24 @@ async fn frontend_config() -> impl IntoResponse {
                 .filter(|&p| p > 0)
                 .map(|p| format!("https://localhost:{}", p))
         });
+    // If publicUrl has no port and backend listens on non-443, insert :PORT after host so browser connects to WT endpoint
+    if let (Some(ref u), Some(port)) = (
+        &url,
+        env::var("WEBTRANSPORT_PORT").ok().and_then(|s| s.trim().parse::<u16>().ok()),
+    ) {
+        if port != 0 && port != 443 {
+            let after_scheme = match u.find("://") {
+                Some(i) => &u[i + 3..],
+                None => u.as_str(),
+            };
+            let authority = after_scheme.split('/').next().unwrap_or(after_scheme);
+            let path = after_scheme.get(authority.len()..).unwrap_or("");
+            if !authority.contains(':') {
+                let scheme = u.find("://").map(|i| &u[..i + 3]).unwrap_or("https://");
+                url = Some(format!("{}{}:{}{}", scheme, authority, port, path));
+            }
+        }
+    }
     let body = FrontendConfig {
         webtransport_url: url,
     };
