@@ -411,7 +411,15 @@ struct FrontendConfig {
 async fn frontend_config() -> impl IntoResponse {
     let url = env::var("WEBTRANSPORT_PUBLIC_URL")
         .ok()
-        .filter(|s| !s.trim().is_empty());
+        .filter(|s| !s.trim().is_empty())
+        .or_else(|| {
+            // Local dev: if WebTransport port is set but no public URL, default to https://localhost:PORT
+            env::var("WEBTRANSPORT_PORT")
+                .ok()
+                .and_then(|s| s.trim().parse::<u16>().ok())
+                .filter(|&p| p > 0)
+                .map(|p| format!("https://localhost:{}", p))
+        });
     let body = FrontendConfig {
         webtransport_url: url,
     };

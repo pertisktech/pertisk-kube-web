@@ -177,13 +177,14 @@ export function openRealtimeConnection(
     if (wtUrl && hasWebTransportAPI()) {
       try {
         closeRef.current = await connectWebTransport(resourceType, callbacks, wtUrl);
+        console.log('[realtime] Using WebTransport', wtUrl);
       } catch (e) {
-        if (import.meta.env.DEV) {
-          console.debug('[realtime] WebTransport failed, using WebSocket:', e);
-        }
+        console.warn('[realtime] WebTransport failed, using WebSocket:', e);
         closeRef.current = connectWebSocket(resourceType, callbacks);
       }
     } else {
+      if (!wtUrl) console.log('[realtime] No WebTransport URL (check /api/config), using WebSocket');
+      else if (!hasWebTransportAPI()) console.log('[realtime] WebTransport API not available, using WebSocket');
       closeRef.current = connectWebSocket(resourceType, callbacks);
     }
   })();
@@ -203,12 +204,17 @@ export async function openRealtimeConnectionAsync(
 ): Promise<() => void> {
   const wtUrl = await getEffectiveWebTransportUrl();
   if (wtUrl && hasWebTransportAPI()) {
-    return connectWebTransport(resourceType, callbacks, wtUrl).catch((e) => {
-      if (import.meta.env.DEV) {
-        console.debug('[realtime] WebTransport failed, using WebSocket:', e);
-      }
-      return Promise.resolve(connectWebSocket(resourceType, callbacks));
-    });
+    return connectWebTransport(resourceType, callbacks, wtUrl)
+      .then((close) => {
+        console.log('[realtime] Using WebTransport', wtUrl);
+        return close;
+      })
+      .catch((e) => {
+        console.warn('[realtime] WebTransport failed, using WebSocket:', e);
+        return Promise.resolve(connectWebSocket(resourceType, callbacks));
+      });
   }
+  if (!wtUrl) console.log('[realtime] No WebTransport URL (check /api/config), using WebSocket');
+  else if (!hasWebTransportAPI()) console.log('[realtime] WebTransport API not available, using WebSocket');
   return connectWebSocket(resourceType, callbacks);
 }

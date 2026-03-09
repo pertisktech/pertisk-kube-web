@@ -19,8 +19,11 @@ HELM_CHART ?= ./helm/pertisk-kube
 # App port (must match helm/pertisk-kube/values.yaml app.service.port)
 APP_PORT ?= 8091
 GRPC_PORT ?= 50051
+# Local WebTransport TLS: use mkcert certs if present (make certs)
+CERTS_DIR := $(CURDIR)/certs
+WT_CERT_ENV := $(if $(wildcard certs/localhost.pem),WEBTRANSPORT_TLS_CERT=$(CERTS_DIR)/localhost.pem WEBTRANSPORT_TLS_KEY=$(CERTS_DIR)/localhost-key.pem,)
 
-.PHONY: dev dev-backend dev-frontend frontend-install frontend-build frontend-build-watch tools fmt build-backend run-monolith run-ingress-k8s
+.PHONY: dev dev-backend dev-frontend frontend-install frontend-build frontend-build-watch tools fmt build-backend run-monolith run-ingress-k8s certs
 .PHONY: docker-build docker-build-amd64 docker-build-arm64 docker-build-multi docker-push docker-push-multi
 .PHONY: docker-base-build docker-base-push docker-base-push-multi
 .PHONY: helm-install helm-upgrade helm-uninstall helm-template helm-deploy port-forward ingress-hosts lb-url
@@ -55,6 +58,13 @@ fmt:
 build-backend:
 	cargo build -p pertisk-kube-backend
 
+# Generate trusted local TLS certs for WebTransport (https://localhost:4433). Requires mkcert (brew install mkcert && mkcert -install).
+certs:
+	@mkdir -p certs
+	@command -v mkcert >/dev/null 2>&1 || { echo "Install mkcert: brew install mkcert && mkcert -install"; exit 1; }
+	mkcert -key-file certs/localhost-key.pem -cert-file certs/localhost.pem localhost 127.0.0.1 ::1
+	@echo "✓ certs/localhost.pem and certs/localhost-key.pem created. run-ingress-k8s will use them for WebTransport."
+
 # Build frontend and run backend serving the built SPA on a single port.
 run-monolith: frontend-build
 	STATIC_DIR=frontend/dist cargo run -p pertisk-kube-backend
@@ -74,14 +84,16 @@ run-ingress-k8s: tools frontend-build
 	trap 'kill $$FRONTEND_WATCH_PID 2>/dev/null || true' INT TERM EXIT; \
 	if [ -f "$(K8S_KUBECONFIG)" ]; then \
 		echo "Using local k8s kubeconfig: $(K8S_KUBECONFIG)"; \
-		KUBECONFIG="$(K8S_KUBECONFIG)" \
+		$(WT_CERT_ENV) KUBECONFIG="$(K8S_KUBECONFIG)" \
 		STATIC_DIR=frontend/dist \
 		WEBTRANSPORT_PORT=4433 \
+		WEBTRANSPORT_PUBLIC_URL=https://localhost:4433 \
 		cargo watch -x 'run -p pertisk-kube-backend'; \
 	else \
 		echo "k8s kubeconfig not found at $(K8S_KUBECONFIG); using current kubeconfig context instead."; \
-		STATIC_DIR=frontend/dist \
+		$(WT_CERT_ENV) STATIC_DIR=frontend/dist \
 		WEBTRANSPORT_PORT=4433 \
+		WEBTRANSPORT_PUBLIC_URL=https://localhost:4433 \
 		cargo watch -x 'run -p pertisk-kube-backend'; \
 	fi
 

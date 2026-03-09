@@ -118,7 +118,7 @@ ingressGrpc:
 # Optional: set app.webtransport.publicUrl so frontend gets the URL from /api/config (no rebuild).
 # Or build frontend with VITE_WEBTRANSPORT_URL=https://<host below>.
 ingressWebtransport:
-  enabled: true
+  enabled: false
   className: "pertisk-rproxy"
   annotations: {}
   hosts:
@@ -126,7 +126,7 @@ ingressWebtransport:
   tls:
     - secretName: admin-talos-hz-tls
       hosts:
-        - "*.pertisk-kube.example.com"
+        - "wt.talos-hz.thaidevops.co"
 
 # PodDisruptionBudget — keeps at least 1 pod available during node drains / rolling updates
 pdb:

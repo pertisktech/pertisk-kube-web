@@ -38,3 +38,4 @@ coverage/
 .cache/
 tmp/
 temp/
+certs/
