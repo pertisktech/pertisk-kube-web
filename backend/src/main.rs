@@ -6,8 +6,11 @@ use axum::{
     routing::{delete, get, post},
     Json, Router,
 };
+use base64::{engine::general_purpose::STANDARD as BASE64, Engine};
 use kube::Client;
-use std::{env, net::SocketAddr, path::PathBuf, sync::Arc};
+use once_cell::sync::OnceCell;
+use sha2::Digest;
+use std::{env, fs::File, io::BufReader, net::SocketAddr, path::PathBuf, sync::Arc};
 use tower_http::{
     cors::{Any, CorsLayer},
     services::{ServeDir, ServeFile},
@@ -371,6 +374,9 @@ async fn main() -> anyhow::Result<()> {
         let cert_path = env::var("WEBTRANSPORT_TLS_CERT")
             .ok()
             .zip(env::var("WEBTRANSPORT_TLS_KEY").ok());
+        if let Some((ref cert, ref _key)) = cert_path {
+            let _ = WEBTRANSPORT_CERT_HASH.get_or_init(|| compute_webtransport_cert_hash(cert));
+        }
         let hostnames: Vec<String> = env::var("WEBTRANSPORT_HOSTNAMES")
             .unwrap_or_else(|_| "localhost".to_string())
             .split(',')
@@ -382,8 +388,9 @@ async fn main() -> anyhow::Result<()> {
         } else {
             hostnames
         };
+        let cert_path_for_wt = cert_path.clone();
         tokio::spawn(async move {
-            if let Err(e) = wt_handler::run_webtransport_server(wt_state, wt_port, cert_path, hostnames).await {
+            if let Err(e) = wt_handler::run_webtransport_server(wt_state, wt_port, cert_path_for_wt, hostnames).await {
                 error!("WebTransport server error: {}", e);
             }
         });
@@ -400,12 +407,31 @@ async fn main() -> anyhow::Result<()> {
     Ok(())
 }
 
-/// Frontend config: public URL for WebTransport (from env WEBTRANSPORT_PUBLIC_URL).
-/// Allows runtime config so the same image can be deployed with different URLs.
+/// Cached SHA-256 hash of the first WebTransport TLS cert (base64), for serverCertificateHashes.
+/// Set at startup when WEBTRANSPORT_TLS_CERT is used.
+static WEBTRANSPORT_CERT_HASH: OnceCell<Option<String>> = OnceCell::new();
+
+/// Compute SHA-256 of the first certificate in a PEM file; return base64-encoded hash for serverCertificateHashes.
+fn compute_webtransport_cert_hash(cert_path: &str) -> Option<String> {
+    let file = File::open(cert_path).ok()?;
+    let mut reader = BufReader::new(file);
+    while let Ok(Some(item)) = rustls_pemfile::read_one(&mut reader) {
+        if let rustls_pemfile::Item::X509Certificate(cert) = item {
+            let hash = sha2::Sha256::digest(cert.as_ref());
+            let bytes: &[u8] = hash.as_ref();
+            return Some(BASE64.encode(bytes));
+        }
+    }
+    None
+}
+
+/// Frontend config: public URL for WebTransport (from env WEBTRANSPORT_PUBLIC_URL) and optional cert hash for serverCertificateHashes.
 #[derive(serde::Serialize)]
 struct FrontendConfig {
     #[serde(skip_serializing_if = "Option::is_none")]
     webtransport_url: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    webtransport_cert_hash: Option<String>,
 }
 
 async fn frontend_config() -> impl IntoResponse {
@@ -420,9 +446,10 @@ async fn frontend_config() -> impl IntoResponse {
                 .filter(|&p| p > 0)
                 .map(|p| format!("https://localhost:{}", p))
         });
-    // Return URL as-is (no port added). For proxy-on-443 use publicUrl without port; for direct expose include :port in publicUrl.
+    let cert_hash = WEBTRANSPORT_CERT_HASH.get().and_then(|o| o.clone());
     let body = FrontendConfig {
         webtransport_url: url,
+        webtransport_cert_hash: cert_hash,
     };
     (StatusCode::OK, Json(body))
 }

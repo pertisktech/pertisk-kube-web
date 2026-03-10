@@ -16,6 +16,8 @@ export interface RealtimeConnectionCallbacks {
 
 interface FrontendConfig {
   webtransport_url?: string | null;
+  /** Base64-encoded SHA-256 of server cert; when set, use serverCertificateHashes for WebTransport (e.g. self-signed localhost). */
+  webtransport_cert_hash?: string | null;
 }
 
 let cachedConfig: FrontendConfig | null = null;
@@ -62,6 +64,21 @@ export async function getEffectiveWebTransportUrl(): Promise<string | null> {
   return normalizeWebTransportUrl(raw ?? '');
 }
 
+/** Base64 cert hash from /api/config; when present, use serverCertificateHashes when connecting WebTransport. */
+export async function getWebTransportCertHash(): Promise<ArrayBuffer | null> {
+  const config = await getFrontendConfig();
+  const b64 = config.webtransport_cert_hash;
+  if (!b64 || typeof b64 !== 'string' || !b64.trim()) return null;
+  try {
+    const binary = atob(b64.trim());
+    const bytes = new Uint8Array(binary.length);
+    for (let i = 0; i < binary.length; i++) bytes[i] = binary.charCodeAt(i);
+    return bytes.buffer;
+  } catch {
+    return null;
+  }
+}
+
 function getWebSocketUrl(): string {
   const protocol = window.location.protocol === 'https:' ? 'wss' : 'ws';
   const host = window.location.host;
@@ -101,14 +118,23 @@ function connectWebSocket(
 async function connectWebTransport(
   resourceType: string,
   callbacks: RealtimeConnectionCallbacks,
-  url: string
+  url: string,
+  serverCertificateHashes?: ArrayBuffer | null
 ): Promise<() => void> {
   const { onMessage, onOpen, onClose, onError } = callbacks;
   if (!url) {
     throw new Error('WebTransport URL not available');
   }
 
-  const transport = new (window as unknown as { WebTransport: new (url: string) => WebTransport }).WebTransport(url);
+  type WTOptions = { serverCertificateHashes?: Array<{ algorithm: string; value: ArrayBuffer }> };
+  const options: WTOptions = {};
+  if (serverCertificateHashes) {
+    options.serverCertificateHashes = [{ algorithm: 'sha-256', value: serverCertificateHashes }];
+  }
+  const TransportCtor = (window as unknown as { WebTransport: new (url: string, options?: WTOptions) => WebTransport }).WebTransport;
+  const transport = options.serverCertificateHashes
+    ? new TransportCtor(url, options)
+    : new TransportCtor(url);
   await transport.ready;
 
   const stream = await transport.createBidirectionalStream();
@@ -177,10 +203,10 @@ export function openRealtimeConnection(
 ): () => void {
   const closeRef: { current: (() => void) | null } = { current: null };
   (async () => {
-    const wtUrl = await getEffectiveWebTransportUrl();
+    const [wtUrl, certHash] = await Promise.all([getEffectiveWebTransportUrl(), getWebTransportCertHash()]);
     if (wtUrl && hasWebTransportAPI()) {
       try {
-        closeRef.current = await connectWebTransport(resourceType, callbacks, wtUrl);
+        closeRef.current = await connectWebTransport(resourceType, callbacks, wtUrl, certHash);
         console.log('[realtime] Using WebTransport', wtUrl);
       } catch (e) {
         console.warn('[realtime] WebTransport failed, using WebSocket:', e);
@@ -206,9 +232,9 @@ export async function openRealtimeConnectionAsync(
   resourceType: string,
   callbacks: RealtimeConnectionCallbacks
 ): Promise<() => void> {
-  const wtUrl = await getEffectiveWebTransportUrl();
+  const [wtUrl, certHash] = await Promise.all([getEffectiveWebTransportUrl(), getWebTransportCertHash()]);
   if (wtUrl && hasWebTransportAPI()) {
-    return connectWebTransport(resourceType, callbacks, wtUrl)
+    return connectWebTransport(resourceType, callbacks, wtUrl, certHash)
       .then((close) => {
         console.log('[realtime] Using WebTransport', wtUrl);
         return close;
