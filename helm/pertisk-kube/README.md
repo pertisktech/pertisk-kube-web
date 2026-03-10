@@ -64,6 +64,7 @@ The following table lists the configurable parameters:
 | `app.webtransport.publicUrl` | Public WebTransport URL (frontend reads from `/api/config`; env `WEBTRANSPORT_PUBLIC_URL`) | `""` |
 | `app.webtransport.tlsSecretName` | Secret name for WebTransport TLS (must have `tls.crt` and `tls.key`; same idea as local certs/) | `""` |
 | `app.webtransport.exposeLoadBalancer` | Create a second Service (LoadBalancer) exposing only 50052/UDP for direct WebTransport access | `false` |
+| `app.webtransport.loadBalancerDualStack` | When exposeLoadBalancer is true: set ipFamilyPolicy RequireDualStack (IPv4 + IPv6) on the WebTransport Service | `true` |
 | `ingress.enabled` | Enable ingress | `true` |
 | `ingress.hosts` | Ingress hosts | `[pertisk-kube.example.com]` |
 | `rbac.create` | Create RBAC resources | `true` |

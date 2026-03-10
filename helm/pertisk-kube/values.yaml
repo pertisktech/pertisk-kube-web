@@ -23,11 +23,11 @@ app:
     type: ClusterIP
     port: 8091
     targetPort: 8091
-    grpcPort: 50051
-    grpcTargetPort: 50051
+    grpcPort: 7443
+    grpcTargetPort: 7443
     # WebTransport (QUIC over UDP): port must be exposed as UDP in Service/LB so QUIC packets reach the pod.
-    webtransportPort: 50052
-    webtransportTargetPort: 50052
+    webtransportPort: 8443
+    webtransportTargetPort: 8443
   # WebTransport: enable server and optional public URL for frontend (from env).
   # Set publicUrl so the frontend gets the WebTransport URL from GET /api/config (no rebuild needed).
   webtransport:
@@ -41,6 +41,8 @@ app:
     tlsSecretName: "admin-talos-hz-tls"  # e.g. "admin-talos-hz-tls" or "" to use self-signed
     # Expose WebTransport (UDP) via a dedicated LoadBalancer so external clients can connect to port 50052. Set publicUrl to https://<host>:50052.
     exposeLoadBalancer: false  # set true to create a second Service (LoadBalancer) for 50052/UDP only
+    # When exposeLoadBalancer is true: use dual-stack (IPv4 + IPv6) for the LoadBalancer. Requires cluster and MetalLB/pool to support dual-stack.
+    loadBalancerDualStack: true
   env:
     rustLog: info
   auth:

@@ -17,4 +17,10 @@ spec:
       port: {{ .Values.app.service.webtransportPort }}
       targetPort: {{ .Values.app.service.webtransportTargetPort }}
       protocol: UDP
+  {{- if .Values.app.webtransport.loadBalancerDualStack }}
+  ipFamilyPolicy: RequireDualStack
+  ipFamilies:
+    - IPv4
+    - IPv6
+  {{- end }}
 {{- end }}
