@@ -1,0 +1,19 @@
+# Direct WebTransport exposure (no reverse proxy passthrough).
+# Use with: helm upgrade -f values.yaml -f values-talos-hz-direct-wt.yaml
+# Or: KUBECONFIG=/path/to/talos-kubeconfig.yaml skaffold run -p talos-hz-direct-wt
+#     (set KUBECONFIG so Skaffold targets the Talos cluster, not default e.g. EKS)
+#
+# After deploy:
+# 1. kubectl get svc -n pertisk-rproxy pertisk-kube-webtransport
+# 2. Point DNS wt.talos-hz.thaidevops.co to the EXTERNAL-IP of that Service
+# 3. Open firewall UDP and TCP 8443 to that IP
+# 4. Frontend gets publicUrl from /api/config → https://wt.talos-hz.thaidevops.co:8443
+#
+# Important: Use port 8443, not 30433. 30433 was the pt-rproxy passthrough port; direct WT uses 8443 on the pertisk-kube-webtransport Service. If you still see QUIC timeout on :30433, you are still hitting the old proxy; deploy with this profile and point wt.* DNS to the webtransport Service IP.
+
+app:
+  webtransport:
+    exposeLoadBalancer: true
+    publicUrl: "https://wt.talos-hz.thaidevops.co:8443"
+    # tlsSecretName from base values (admin-talos-hz-tls) must cover wt.talos-hz.thaidevops.co
+    # loadBalancerDualStack: false  # set if cluster is IPv4-only (default true)

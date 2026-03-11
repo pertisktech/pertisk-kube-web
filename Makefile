@@ -1,6 +1,6 @@
 SHELL := /bin/sh
 
-K8S_KUBECONFIG ?= /Users/nat/.kube/talos-omni-hz-cluister-kubeconfig.yaml
+K8S_KUBECONFIG ?= /Users/dotnetnat/.kube/kubeadm-hz-cluster.yaml
 VERSION ?= $(shell V=$$(git describe --tags --always --abbrev=7 2>/dev/null || echo ""); \
 	if echo "$$V" | grep -qE '^v?[0-9]+\.'; then \
 		echo "$$V" | sed 's/^v//; s/-/./g'; \

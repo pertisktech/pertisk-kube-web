@@ -28,6 +28,20 @@ deploy:
 
 # Profiles
 profiles:
+  # Talos-HZ: expose WebTransport directly via LoadBalancer (no pt-rproxy passthrough). Point wt.talos-hz.thaidevops.co to the Service EXTERNAL-IP; open UDP 8443.
+  - name: talos-hz-direct-wt
+    deploy:
+      helm:
+        releases:
+          - name: pertisk-kube
+            chartPath: ./helm/pertisk-kube
+            namespace: pertisk-rproxy
+            createNamespace: true
+            valuesFiles:
+              - helm/pertisk-kube/values.yaml
+              - helm/pertisk-kube/values-talos-hz-direct-wt.yaml
+            setValueTemplates:
+              app.image.tag: "{{.IMAGE_TAG_harbor_tools_thaidevops_co_pertisksoft_pertisk_kube_web}}"
   # Production: uses git tags for versioning and prod values
   - name: prod
     build:
