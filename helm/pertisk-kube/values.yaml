@@ -28,6 +28,8 @@ app:
     # WebTransport (QUIC over UDP): port must be exposed as UDP in Service/LB so QUIC packets reach the pod.
     webtransportPort: 8443
     webtransportTargetPort: 8443
+    # Dual-stack (IPv4 + IPv6) for ClusterIP so ingress and pods can use either family. Requires cluster to support dual-stack.
+    dualStack: true
   # WebTransport: enable server and optional public URL for frontend (from env).
   # Set publicUrl so the frontend gets the WebTransport URL from GET /api/config (no rebuild needed).
   webtransport:

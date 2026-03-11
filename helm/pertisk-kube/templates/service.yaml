@@ -8,6 +8,12 @@ metadata:
     app: {{ .Values.app.name }}
 spec:
   type: {{ .Values.app.service.type }}
+  {{- if .Values.app.service.dualStack }}
+  ipFamilyPolicy: PreferDualStack
+  ipFamilies:
+    - IPv4
+    - IPv6
+  {{- end }}
   selector:
     app: {{ .Values.app.name }}
   ports:
