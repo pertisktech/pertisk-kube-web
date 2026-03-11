@@ -12,7 +12,7 @@ namespace:
 # Unified application configuration
 app:
   name: pertisk-kube
-  replicaCount: 3
+  replicaCount: 1
   image:
     registry: harbor.tools.thaidevops.co
     repository: pertisksoft/pertisk-kube/web
