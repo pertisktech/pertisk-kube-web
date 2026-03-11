@@ -4,6 +4,10 @@
 
 use crate::ws_handler::{spawn_watch_for_resource, ClientMessage, ServerMessage};
 use crate::AppState;
+use rustls_pemfile::certs;
+use sha2::{Digest, Sha256};
+use std::io::BufReader;
+use std::net::SocketAddr;
 use tokio::io::AsyncWriteExt;
 use tracing::{error, info, warn};
 use uuid::Uuid;
@@ -12,33 +16,58 @@ use wtransport::{Endpoint, Identity, ServerConfig};
 
 const DEFAULT_READ_BUF_SIZE: usize = 65536;
 
-/// Runs the WebTransport server loop. Bind to the given port with TLS.
-/// Uses self-signed cert for the given hostnames if cert paths are not set.
+/// SHA-256 hash of the first certificate in the PEM file (leaf cert). Used for serverCertificateHashes
+/// so the frontend can pin the exact cert we serve. Prefer this over cert_hash_from_identity when
+/// loading from PEM so the hash always matches what the TLS stack presents.
+pub fn cert_hash_from_pem_file(cert_path: &str) -> Option<Vec<u8>> {
+    let file = std::fs::File::open(cert_path).ok()?;
+    let mut reader = BufReader::new(file);
+    let chain = certs(&mut reader).collect::<Result<Vec<_>, _>>().ok()?;
+    let first_der = chain.into_iter().next()?;
+    Some(Sha256::digest(&first_der).to_vec())
+}
+
+/// Create WebTransport TLS identity from PEM files or self-signed for hostnames.
+pub async fn create_webtransport_identity(
+    cert_path: Option<(String, String)>,
+    hostnames: &[String],
+) -> anyhow::Result<Identity> {
+    match cert_path {
+        Some((cert, key)) => Identity::load_pemfiles(&cert, &key)
+            .await
+            .map_err(|e| anyhow::anyhow!("Failed to load TLS cert/key: {}", e)),
+        None => {
+            let names: Vec<&str> = hostnames.iter().map(String::as_str).collect();
+            Identity::self_signed(names).map_err(|e| anyhow::anyhow!("Self-signed cert failed: {}", e))
+        }
+    }
+}
+
+/// Raw SHA-256 (32 bytes) of the first cert in the chain, for serverCertificateHashes (sent as JSON array like pertisk-web-transport).
+pub fn cert_hash_from_identity(identity: &Identity) -> Option<Vec<u8>> {
+    identity
+        .certificate_chain()
+        .as_slice()
+        .first()
+        .map(|cert| cert.hash().as_ref().to_vec())
+}
+
+/// Runs the WebTransport server loop. Binds to 0.0.0.0:port so the port is visible (e.g. netstat/lsof).
+/// Identity and cert hash must be set in main before spawning so /api/config has the hash.
 pub async fn run_webtransport_server(
     state: AppState,
     port: u16,
-    cert_path: Option<(String, String)>,
-    hostnames: Vec<String>,
+    identity: Identity,
 ) -> anyhow::Result<()> {
-    let identity = match cert_path {
-        Some((cert, key)) => {
-            Identity::load_pemfiles(&cert, &key)
-                .await
-                .map_err(|e| anyhow::anyhow!("Failed to load TLS cert/key: {}", e))?
-        }
-        None => {
-            let names: Vec<&str> = hostnames.iter().map(String::as_str).collect();
-            Identity::self_signed(names).map_err(|e| anyhow::anyhow!("Self-signed cert failed: {}", e))?
-        }
-    };
-
+    let bind_addr = SocketAddr::from(([0, 0, 0, 0], port));
     let config = ServerConfig::builder()
-        .with_bind_default(port)
+        .with_bind_address(bind_addr)
         .with_identity(identity)
         .build();
 
     let server = Endpoint::server(config)?;
-    info!("WebTransport server listening on port {}", port);
+    let bound = server.local_addr().unwrap_or(bind_addr);
+    info!("WebTransport server listening on {}", bound);
 
     loop {
         let incoming_session = server.accept().await;

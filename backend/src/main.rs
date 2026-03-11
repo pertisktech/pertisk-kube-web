@@ -6,17 +6,15 @@ use axum::{
     routing::{delete, get, post},
     Json, Router,
 };
-use base64::{engine::general_purpose::STANDARD as BASE64, Engine};
 use kube::Client;
 use once_cell::sync::OnceCell;
-use sha2::Digest;
-use std::{env, fs::File, io::BufReader, net::SocketAddr, path::PathBuf, sync::Arc};
+use std::{env, net::SocketAddr, path::PathBuf, sync::Arc};
 use tower_http::{
     cors::{Any, CorsLayer},
     services::{ServeDir, ServeFile},
 };
 use tonic::transport::Server;
-use tracing::{error, info};
+use tracing::{error, info, warn};
 use tracing_subscriber::EnvFilter;
 
 mod grpc_service;
@@ -90,6 +88,7 @@ async fn main() -> anyhow::Result<()> {
         .route("/health", get(health))
         .route("/readiness", get(readiness))
         .route("/config", get(frontend_config))
+        .route("/webtransport-cert-hash-hex", get(webtransport_cert_hash_hex))
         .route("/login", post(login));
 
     let refresh_api = Router::new()
@@ -367,16 +366,13 @@ async fn main() -> anyhow::Result<()> {
         .add_service(tonic_web::enable(grpc_service))
         .serve(grpc_addr);
 
-    // Optional WebTransport server (set WEBTRANSPORT_PORT, e.g. 4433; requires HTTPS)
+    // Optional WebTransport server (set WEBTRANSPORT_PORT, e.g. 8443; requires HTTPS)
     let wt_port = env::var("WEBTRANSPORT_PORT").ok().and_then(|s| s.parse::<u16>().ok()).unwrap_or(0);
     if wt_port > 0 {
         let wt_state = state.clone();
         let cert_path = env::var("WEBTRANSPORT_TLS_CERT")
             .ok()
             .zip(env::var("WEBTRANSPORT_TLS_KEY").ok());
-        if let Some((ref cert, ref _key)) = cert_path {
-            let _ = WEBTRANSPORT_CERT_HASH.get_or_init(|| compute_webtransport_cert_hash(cert));
-        }
         let hostnames: Vec<String> = env::var("WEBTRANSPORT_HOSTNAMES")
             .unwrap_or_else(|_| "localhost".to_string())
             .split(',')
@@ -388,14 +384,38 @@ async fn main() -> anyhow::Result<()> {
         } else {
             hostnames
         };
-        let cert_path_for_wt = cert_path.clone();
+        match &cert_path {
+            Some((c, _)) => info!("WebTransport using TLS cert from PEM: {}", c),
+            None => info!("WebTransport using self-signed cert (for trusted localhost use: make certs then run-ingress-k8s)"),
+        }
+        let identity = wt_handler::create_webtransport_identity(cert_path.clone(), &hostnames).await?;
+        // Set cert hash so frontend can use serverCertificateHashes (must match cert the server presents).
+        // Prefer hash from PEM file when using custom certs so it always matches; fall back to Identity for self-signed.
+        let hash = cert_path
+            .as_ref()
+            .and_then(|(cert, _)| wt_handler::cert_hash_from_pem_file(cert))
+            .or_else(|| wt_handler::cert_hash_from_identity(&identity));
+        if let Some(hash) = hash {
+            let hex_hash: String = hash.iter().map(|b| format!("{:02x}", b)).collect();
+            info!(
+                "WebTransport cert hash set for serverCertificateHashes (hex): {}",
+                hex_hash
+            );
+            set_webtransport_cert_hash(Some(hash));
+        } else {
+            warn!(
+                "WebTransport cert hash not set: frontend cannot use serverCertificateHashes — \
+                TLS handshake may fail (CERTIFICATE_VERIFY_FAILED). \
+                Check PEM format and that the cert file contains at least one certificate."
+            );
+        }
         tokio::spawn(async move {
-            if let Err(e) = wt_handler::run_webtransport_server(wt_state, wt_port, cert_path_for_wt, hostnames).await {
+            if let Err(e) = wt_handler::run_webtransport_server(wt_state, wt_port, identity).await {
                 error!("WebTransport server error: {}", e);
             }
         });
     } else {
-        info!("WebTransport disabled (set WEBTRANSPORT_PORT to enable, e.g. 4433)");
+        info!("WebTransport disabled (set WEBTRANSPORT_PORT to enable, e.g. 8443)");
     }
 
     // Run HTTP and gRPC servers concurrently
@@ -407,31 +427,23 @@ async fn main() -> anyhow::Result<()> {
     Ok(())
 }
 
-/// Cached SHA-256 hash of the first WebTransport TLS cert (base64), for serverCertificateHashes.
-/// Set at startup when WEBTRANSPORT_TLS_CERT is used.
-static WEBTRANSPORT_CERT_HASH: OnceCell<Option<String>> = OnceCell::new();
+/// Cached SHA-256 hash of the first WebTransport TLS cert (32 bytes), for serverCertificateHashes.
+/// Sent as JSON array of numbers so frontend can do new Uint8Array(hash) like pertisk-web-transport.
+pub(crate) static WEBTRANSPORT_CERT_HASH: OnceCell<Option<Vec<u8>>> = OnceCell::new();
 
-/// Compute SHA-256 of the first certificate in a PEM file; return base64-encoded hash for serverCertificateHashes.
-fn compute_webtransport_cert_hash(cert_path: &str) -> Option<String> {
-    let file = File::open(cert_path).ok()?;
-    let mut reader = BufReader::new(file);
-    while let Ok(Some(item)) = rustls_pemfile::read_one(&mut reader) {
-        if let rustls_pemfile::Item::X509Certificate(cert) = item {
-            let hash = sha2::Sha256::digest(cert.as_ref());
-            let bytes: &[u8] = hash.as_ref();
-            return Some(BASE64.encode(bytes));
-        }
-    }
-    None
+/// Set so the frontend can use serverCertificateHashes (must match the Identity the server uses).
+pub(crate) fn set_webtransport_cert_hash(h: Option<Vec<u8>>) {
+    let _ = WEBTRANSPORT_CERT_HASH.set(h);
 }
 
-/// Frontend config: public URL for WebTransport (from env WEBTRANSPORT_PUBLIC_URL) and optional cert hash for serverCertificateHashes.
+/// Frontend config: public URL for WebTransport and cert hash (array of 32 bytes) for serverCertificateHashes.
 #[derive(serde::Serialize)]
 struct FrontendConfig {
     #[serde(skip_serializing_if = "Option::is_none")]
     webtransport_url: Option<String>,
+    /// SHA-256 cert hash as [n1, n2, ...]; frontend uses new Uint8Array(this) like pertisk-web-transport.
     #[serde(skip_serializing_if = "Option::is_none")]
-    webtransport_cert_hash: Option<String>,
+    webtransport_cert_hash: Option<Vec<u8>>,
 }
 
 async fn frontend_config() -> impl IntoResponse {
@@ -452,6 +464,16 @@ async fn frontend_config() -> impl IntoResponse {
         webtransport_cert_hash: cert_hash,
     };
     (StatusCode::OK, Json(body))
+}
+
+/// Returns the WebTransport cert hash as hex (for debugging: compare with frontend log).
+async fn webtransport_cert_hash_hex() -> impl IntoResponse {
+    let hex = WEBTRANSPORT_CERT_HASH
+        .get()
+        .and_then(|o| o.as_ref())
+        .map(|h| h.iter().map(|b| format!("{:02x}", b)).collect::<String>())
+        .unwrap_or_else(|| "none".to_string());
+    (StatusCode::OK, hex)
 }
 
 async fn health() -> impl IntoResponse {

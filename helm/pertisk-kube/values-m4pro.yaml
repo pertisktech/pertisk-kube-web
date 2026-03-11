@@ -1,0 +1,46 @@
+# Example override for dashboard.m4pro.thaidevops.co + wt.m4pro.thaidevops.co
+# Use: helm upgrade pertisk-kube . -n pertisk-rproxy -f values.yaml -f values-m4pro.yaml
+#
+# See docs/WEBTRANSPORT_M4PRO_SETUP.md for full checklist (UDP, cert, port 443 vs 4433).
+
+app:
+  service:
+    # Use 4433 as the WebTransport port when exposeLoadBalancer is true (so LB exposes 4433).
+    webtransportPort: 4433
+    webtransportTargetPort: 8443
+  webtransport:
+    enabled: true
+    # Public URL: use :4433 only if you expose the WebTransport LoadBalancer on 4433.
+    # Prefer https://wt.m4pro.thaidevops.co (no port) when using pt-rproxy relay on 443.
+    publicUrl: "https://wt.m4pro.thaidevops.co:4433"
+    # Secret with tls.crt + tls.key for wt.m4pro.thaidevops.co (e.g. from cert-manager).
+    tlsSecretName: "wt-m4pro-tls"
+    # Set true to create a separate LoadBalancer for WebTransport (UDP). Then point wt.m4pro DNS to its IP.
+    exposeLoadBalancer: true
+
+# Main ingress: dashboard
+ingress:
+  enabled: true
+  className: "pertisk-rproxy"
+  hosts:
+    - host: dashboard.m4pro.thaidevops.co
+      paths:
+        - path: /
+          pathType: Prefix
+  tls:
+    - secretName: dashboard-m4pro-tls
+      hosts:
+        - dashboard.m4pro.thaidevops.co
+
+# Optional: second host for WebTransport when using pt-rproxy relay on 443 (no 4433).
+# Then set app.webtransport.publicUrl to "https://wt.m4pro.thaidevops.co" and ensure pt-rproxy
+# has a site for wt.m4pro.thaidevops.co with WebTransport relay + UDP 443.
+# ingressWebtransport:
+#   enabled: true
+#   className: "pertisk-rproxy"
+#   hosts:
+#     - host: wt.m4pro.thaidevops.co
+#   tls:
+#     - secretName: wt-m4pro-tls
+#       hosts:
+#         - wt.m4pro.thaidevops.co

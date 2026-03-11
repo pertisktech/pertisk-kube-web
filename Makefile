@@ -19,11 +19,16 @@ HELM_CHART ?= ./helm/pertisk-kube
 # App port (must match helm/pertisk-kube/values.yaml app.service.port)
 APP_PORT ?= 8091
 GRPC_PORT ?= 50051
-# Local WebTransport TLS: use mkcert certs if present (make certs)
+# Local WebTransport TLS: use a matching cert+key pair (same base name). Never mix localhost.pem with wt.*-key.pem.
+# Prefer wt.m4pro.thaidevops.co.pem + wt.m4pro.thaidevops.co-key.pem if both exist; else localhost.pem + localhost-key.pem (make certs).
 CERTS_DIR := $(CURDIR)/certs
-WT_CERT_ENV := $(if $(wildcard certs/localhost.pem),WEBTRANSPORT_TLS_CERT=$(CERTS_DIR)/localhost.pem WEBTRANSPORT_TLS_KEY=$(CERTS_DIR)/localhost-key.pem,)
+WT_HAVE_WT := $(and $(wildcard certs/wt.m4pro.thaidevops.co.pem),$(wildcard certs/wt.m4pro.thaidevops.co-key.pem))
+WT_HAVE_LOCALHOST := $(and $(wildcard certs/localhost.pem),$(wildcard certs/localhost-key.pem))
+WT_CERT_WT := $(if $(WT_HAVE_WT),WEBTRANSPORT_TLS_CERT=$(CERTS_DIR)/wt.m4pro.thaidevops.co.pem WEBTRANSPORT_TLS_KEY=$(CERTS_DIR)/wt.m4pro.thaidevops.co-key.pem,)
+WT_CERT_LOCALHOST := $(if $(WT_HAVE_LOCALHOST),WEBTRANSPORT_TLS_CERT=$(CERTS_DIR)/localhost.pem WEBTRANSPORT_TLS_KEY=$(CERTS_DIR)/localhost-key.pem,)
+WT_CERT_ENV := $(or $(WT_CERT_WT),$(WT_CERT_LOCALHOST))
 
-.PHONY: dev dev-backend dev-frontend frontend-install frontend-build frontend-build-watch tools fmt build-backend run-monolith run-ingress-k8s certs
+.PHONY: dev dev-backend dev-frontend frontend-install frontend-build frontend-build-watch tools fmt build-backend run-monolith run-ingress-k8s certs check-wt-port
 .PHONY: docker-build docker-build-amd64 docker-build-arm64 docker-build-multi docker-push docker-push-multi
 .PHONY: docker-base-build docker-base-push docker-base-push-multi
 .PHONY: helm-install helm-upgrade helm-uninstall helm-template helm-deploy port-forward ingress-hosts lb-url
@@ -58,7 +63,15 @@ fmt:
 build-backend:
 	cargo build -p pertisk-kube-backend
 
-# Generate trusted local TLS certs for WebTransport (https://localhost:4433). Requires mkcert (brew install mkcert && mkcert -install).
+# Check if WebTransport port 8443 is in use (QUIC = UDP). Use: make check-wt-port
+# On macOS netstat often does NOT show UDP listeners; use lsof. Ensure backend is running (make run-ingress-k8s) and log shows "WebTransport server listening on 0.0.0.0:8443".
+check-wt-port:
+	@echo "WebTransport uses UDP. Checking who uses port 8443..."
+	@lsof -i :8443 2>/dev/null && true || (echo "  (none — start backend with: make run-ingress-k8s, then check log for 'WebTransport server listening')"; exit 0)
+	@echo "--- netstat (macOS often omits UDP; if empty above use lsof) ---"
+	@netstat -an 2>/dev/null | grep 8443 || true
+
+# Generate trusted local TLS certs for WebTransport (https://localhost:8443). Requires mkcert (brew install mkcert && mkcert -install).
 certs:
 	@mkdir -p certs
 	@command -v mkcert >/dev/null 2>&1 || { echo "Install mkcert: brew install mkcert && mkcert -install"; exit 1; }
@@ -70,12 +83,16 @@ run-monolith: frontend-build
 	STATIC_DIR=frontend/dist cargo run -p pertisk-kube-backend
 
 # Simulate running as an ingress-style controller talking to k8s via kubeconfig.
+# WebTransport: WEBTRANSPORT_PUBLIC_URL=https://wt.m4pro.thaidevops.co:8443. For that URL to work
+# (no QUIC_TLS_CERTIFICATE_UNKNOWN), use QUIC passthrough so client sees backend cert, or a trusted cert on 8443. See docs/WEBTRANSPORT_WHY_BASE_WORKS.md.
+# Local dev with pt-rproxy passthrough: proxy on 4433 forwards to backend on 8443 (see docs/WEBTRANSPORT_M4PRO_SETUP.md):
+#   (in pt-rproxy:) make dev-serve PERTISK_WT_PASSTHROUGH_ADDR=0.0.0.0:4433 PERTISK_WT_PASSTHROUGH_TARGET=127.0.0.1:8443
 run-ingress-k8s: tools frontend-build
 	@pkill -f "cargo-watch watch -x run -p pertisk-kube-backend" 2>/dev/null || true
 	@pkill -f "target/debug/pertisk-kube-backend" 2>/dev/null || true
-	@EXISTING_PIDS=$$(lsof -ti:8091 -ti:50051 2>/dev/null | sort -u); \
+	@EXISTING_PIDS=$$(lsof -ti:8091 -ti:50051 -ti:8443 2>/dev/null | sort -u); \
 	if [ -n "$$EXISTING_PIDS" ]; then \
-		echo "Stopping existing process(es) on ports 8091/50051: $$EXISTING_PIDS"; \
+		echo "Stopping existing process(es) on ports 8091/50051/8443: $$EXISTING_PIDS"; \
 		echo "$$EXISTING_PIDS" | xargs kill -9; \
 		sleep 1; \
 	fi
@@ -86,14 +103,14 @@ run-ingress-k8s: tools frontend-build
 		echo "Using local k8s kubeconfig: $(K8S_KUBECONFIG)"; \
 		$(WT_CERT_ENV) KUBECONFIG="$(K8S_KUBECONFIG)" \
 		STATIC_DIR=frontend/dist \
-		WEBTRANSPORT_PORT=4433 \
-		WEBTRANSPORT_PUBLIC_URL=https://localhost:4433 \
+		WEBTRANSPORT_PORT=8443 \
+		WEBTRANSPORT_PUBLIC_URL=https://wt.m4pro.thaidevops.co:4433 \
 		cargo watch -x 'run -p pertisk-kube-backend'; \
 	else \
 		echo "k8s kubeconfig not found at $(K8S_KUBECONFIG); using current kubeconfig context instead."; \
 		$(WT_CERT_ENV) STATIC_DIR=frontend/dist \
-		WEBTRANSPORT_PORT=4433 \
-		WEBTRANSPORT_PUBLIC_URL=https://localhost:4433 \
+		WEBTRANSPORT_PORT=8443 \
+		WEBTRANSPORT_PUBLIC_URL=https://wt.m4pro.thaidevops.co:4433 \
 		cargo watch -x 'run -p pertisk-kube-backend'; \
 	fi
 

@@ -2,8 +2,8 @@
  * Realtime transport: WebTransport (when available) with WebSocket fallback.
  * Same JSON protocol: subscribe / resource_update / subscribed / error.
  *
- * WebTransport URL is resolved from (in order):
- * 1. Runtime: GET /api/config → webtransport_url (env WEBTRANSPORT_PUBLIC_URL on backend)
+ * WebTransport URL comes from config only (no same-host check):
+ * 1. Runtime: GET /api/config → webtransport_url (backend env WEBTRANSPORT_PUBLIC_URL)
  * 2. Build time: VITE_WEBTRANSPORT_URL
  */
 
@@ -16,28 +16,108 @@ export interface RealtimeConnectionCallbacks {
 
 interface FrontendConfig {
   webtransport_url?: string | null;
-  /** Base64-encoded SHA-256 of server cert; when set, use serverCertificateHashes for WebTransport (e.g. self-signed localhost). */
-  webtransport_cert_hash?: string | null;
+  /** SHA-256 cert hash as [n1, n2, ...]; use new Uint8Array(this) for serverCertificateHashes (like pertisk-web-transport). */
+  webtransport_cert_hash?: number[] | null;
 }
 
 let cachedConfig: FrontendConfig | null = null;
 
+/** After one WebTransport handshake failure, skip WT and use WebSocket only (avoids repeated cert errors). */
+let webTransportFailedOnce = false;
+
+/** Single probe promise: only one handshake attempt per page load (parallel connections share this). */
+let webTransportProbe: Promise<{ ok: boolean; withHash: boolean }> | null = null;
+
+function isLocalhostUrl(url: string): boolean {
+  try {
+    const host = new URL(url).hostname;
+    return host === 'localhost' || host === '127.0.0.1';
+  } catch {
+    return false;
+  }
+}
+
+/**
+ * Run one WebTransport handshake. For localhost, try without serverCertificateHashes first (mkcert
+ * is trusted by the system); if that fails, try with hash. For other hosts, use hash only.
+ * On failure, set webTransportFailedOnce so all connections use WebSocket.
+ */
+function probeWebTransportOnce(
+  wtUrl: string,
+  certHash: ArrayBuffer | null
+): Promise<{ ok: boolean; withHash: boolean }> {
+  if (webTransportFailedOnce) return Promise.resolve({ ok: false, withHash: false });
+  if (webTransportProbe === null) {
+    webTransportProbe = (async () => {
+      const Ctor = (window as unknown as {
+        WebTransport: new (url: string, options?: { serverCertificateHashes: Array<{ algorithm: string; value: ArrayBuffer }> }) => WebTransport;
+      }).WebTransport;
+
+      const tryConnect = (withHash: boolean, hash: ArrayBuffer | null): Promise<boolean> => {
+        return (async () => {
+          try {
+            if (withHash && hash && hash.byteLength === 32) {
+              const transport = new Ctor(wtUrl, {
+                serverCertificateHashes: [{ algorithm: 'sha-256', value: hash }],
+              });
+              await transport.ready;
+              transport.close();
+            } else {
+              const transport = new Ctor(wtUrl);
+              await transport.ready;
+              transport.close();
+            }
+            return true;
+          } catch {
+            return false;
+          }
+        })();
+      };
+
+      // When we have a cert hash from /api/config, always try with hash first to avoid a failed
+      // handshake (CERTIFICATE_VERIFY_FAILED) that would otherwise happen when the cert is
+      // not trusted or hostname doesn't match (e.g. localhost with *.example.com cert).
+      const hasHash = certHash != null && certHash.byteLength === 32;
+      if (hasHash) {
+        const withHash = await tryConnect(true, certHash);
+        if (withHash) {
+          console.log('[realtime] WebTransport (serverCertificateHashes)', wtUrl);
+          return { ok: true, withHash: true };
+        }
+      }
+      const localhost = isLocalhostUrl(wtUrl);
+      if (localhost && !hasHash) {
+        const withoutHash = await tryConnect(false, null);
+        if (withoutHash) {
+          console.log('[realtime] WebTransport (localhost, system trust e.g. mkcert)', wtUrl);
+          return { ok: true, withHash: false };
+        }
+      }
+
+      webTransportFailedOnce = true;
+      console.warn('[realtime] WebTransport failed, using WebSocket');
+      return { ok: false, withHash: false };
+    })();
+  }
+  return webTransportProbe;
+}
+
 /** Fetch /api/config once and cache (runtime env: WEBTRANSPORT_PUBLIC_URL). */
-async function getFrontendConfig(): Promise<FrontendConfig> {
-  if (cachedConfig !== null) return cachedConfig;
+async function getFrontendConfig(bypassCache = false): Promise<FrontendConfig> {
+  if (!bypassCache && cachedConfig !== null) return cachedConfig;
   try {
     const base = window.location.origin;
     const res = await fetch(`${base}/api/config`, { credentials: 'same-origin' });
     if (res.ok) {
       const data = (await res.json()) as FrontendConfig;
-      cachedConfig = data;
+      if (!bypassCache) cachedConfig = data;
       return data;
     }
   } catch {
     // ignore; fall back to build-time env
   }
-  cachedConfig = {};
-  return cachedConfig;
+  if (!bypassCache) cachedConfig = {};
+  return cachedConfig ?? {};
 }
 
 /** Effective WebTransport URL: runtime config (WEBTRANSPORT_PUBLIC_URL) or build-time (VITE_WEBTRANSPORT_URL). */
@@ -64,16 +144,16 @@ export async function getEffectiveWebTransportUrl(): Promise<string | null> {
   return normalizeWebTransportUrl(raw ?? '');
 }
 
-/** Base64 cert hash from /api/config; when present, use serverCertificateHashes when connecting WebTransport. */
-export async function getWebTransportCertHash(): Promise<ArrayBuffer | null> {
-  const config = await getFrontendConfig();
-  const b64 = config.webtransport_cert_hash;
-  if (!b64 || typeof b64 !== 'string' || !b64.trim()) return null;
+/** Cert hash from /api/config (array of 32 bytes); when present, use serverCertificateHashes like pertisk-web-transport. */
+export async function getWebTransportCertHash(bypassCache = false): Promise<ArrayBuffer | null> {
+  const config = await getFrontendConfig(bypassCache);
+  const arr = config.webtransport_cert_hash;
+  if (!Array.isArray(arr) || arr.length !== 32) return null;
   try {
-    const binary = atob(b64.trim());
-    const bytes = new Uint8Array(binary.length);
-    for (let i = 0; i < binary.length; i++) bytes[i] = binary.charCodeAt(i);
-    return bytes.buffer;
+    // Ensure exactly 32-byte ArrayBuffer (some browsers require exact length for serverCertificateHashes).
+    const buf = new ArrayBuffer(32);
+    new Uint8Array(buf).set(arr.slice(0, 32));
+    return buf;
   } catch {
     return null;
   }
@@ -119,22 +199,19 @@ async function connectWebTransport(
   resourceType: string,
   callbacks: RealtimeConnectionCallbacks,
   url: string,
-  serverCertificateHashes?: ArrayBuffer | null
+  serverCertificateHash: ArrayBuffer | null
 ): Promise<() => void> {
   const { onMessage, onOpen, onClose, onError } = callbacks;
   if (!url) {
     throw new Error('WebTransport URL not available');
   }
 
-  type WTOptions = { serverCertificateHashes?: Array<{ algorithm: string; value: ArrayBuffer }> };
-  const options: WTOptions = {};
-  if (serverCertificateHashes) {
-    options.serverCertificateHashes = [{ algorithm: 'sha-256', value: serverCertificateHashes }];
-  }
+  type WTOptions = { serverCertificateHashes: Array<{ algorithm: string; value: ArrayBuffer }> };
   const TransportCtor = (window as unknown as { WebTransport: new (url: string, options?: WTOptions) => WebTransport }).WebTransport;
-  const transport = options.serverCertificateHashes
-    ? new TransportCtor(url, options)
-    : new TransportCtor(url);
+  const transport =
+    serverCertificateHash && serverCertificateHash.byteLength === 32
+      ? new TransportCtor(url, { serverCertificateHashes: [{ algorithm: 'sha-256', value: serverCertificateHash }] })
+      : new TransportCtor(url);
   await transport.ready;
 
   const stream = await transport.createBidirectionalStream();
@@ -203,18 +280,28 @@ export function openRealtimeConnection(
 ): () => void {
   const closeRef: { current: (() => void) | null } = { current: null };
   (async () => {
-    const [wtUrl, certHash] = await Promise.all([getEffectiveWebTransportUrl(), getWebTransportCertHash()]);
-    if (wtUrl && hasWebTransportAPI()) {
-      try {
-        closeRef.current = await connectWebTransport(resourceType, callbacks, wtUrl, certHash);
-        console.log('[realtime] Using WebTransport', wtUrl);
-      } catch (e) {
-        console.warn('[realtime] WebTransport failed, using WebSocket:', e);
+    const wtUrl = await getEffectiveWebTransportUrl();
+    const certHash = await getWebTransportCertHash(true);
+    const hasCertHash = certHash != null && certHash.byteLength === 32;
+    const localhost = wtUrl ? isLocalhostUrl(wtUrl) : false;
+    // Use WT when we have a URL and (cert hash for pinning, or localhost to try system trust first).
+    const useWT = !webTransportFailedOnce && wtUrl && hasWebTransportAPI() && (hasCertHash || localhost);
+    if (useWT) {
+      const { ok, withHash } = await probeWebTransportOnce(wtUrl, certHash ?? null);
+      if (ok) {
+        try {
+          closeRef.current = await connectWebTransport(resourceType, callbacks, wtUrl, withHash ? certHash ?? null : null);
+        } catch (e) {
+          closeRef.current = connectWebSocket(resourceType, callbacks);
+        }
+      } else {
         closeRef.current = connectWebSocket(resourceType, callbacks);
       }
     } else {
       if (!wtUrl) console.log('[realtime] No WebTransport URL (check /api/config), using WebSocket');
       else if (!hasWebTransportAPI()) console.log('[realtime] WebTransport API not available, using WebSocket');
+      else if (!hasCertHash && !localhost) console.log('[realtime] No cert hash and not localhost, using WebSocket');
+      else if (webTransportFailedOnce) { /* silent: already failed once, use WebSocket */ }
       closeRef.current = connectWebSocket(resourceType, callbacks);
     }
   })();
@@ -232,19 +319,20 @@ export async function openRealtimeConnectionAsync(
   resourceType: string,
   callbacks: RealtimeConnectionCallbacks
 ): Promise<() => void> {
-  const [wtUrl, certHash] = await Promise.all([getEffectiveWebTransportUrl(), getWebTransportCertHash()]);
-  if (wtUrl && hasWebTransportAPI()) {
-    return connectWebTransport(resourceType, callbacks, wtUrl, certHash)
-      .then((close) => {
-        console.log('[realtime] Using WebTransport', wtUrl);
-        return close;
-      })
-      .catch((e) => {
-        console.warn('[realtime] WebTransport failed, using WebSocket:', e);
-        return Promise.resolve(connectWebSocket(resourceType, callbacks));
-      });
+  const wtUrl = await getEffectiveWebTransportUrl();
+  const certHash = await getWebTransportCertHash(true);
+  const hasCertHash = certHash != null && certHash.byteLength === 32;
+  const localhost = wtUrl ? isLocalhostUrl(wtUrl) : false;
+  const useWT = !webTransportFailedOnce && wtUrl && hasWebTransportAPI() && (hasCertHash || localhost);
+  if (useWT) {
+    const { ok, withHash } = await probeWebTransportOnce(wtUrl, certHash ?? null);
+    if (ok) {
+      return connectWebTransport(resourceType, callbacks, wtUrl, withHash ? certHash ?? null : null)
+        .catch(() => Promise.resolve(connectWebSocket(resourceType, callbacks)));
+    }
   }
   if (!wtUrl) console.log('[realtime] No WebTransport URL (check /api/config), using WebSocket');
   else if (!hasWebTransportAPI()) console.log('[realtime] WebTransport API not available, using WebSocket');
+  else if (!hasCertHash && !localhost) console.log('[realtime] No cert hash and not localhost, using WebSocket');
   return connectWebSocket(resourceType, callbacks);
 }

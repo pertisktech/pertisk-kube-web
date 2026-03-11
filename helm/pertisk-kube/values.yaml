@@ -35,7 +35,7 @@ app:
     # Public URL for WebTransport. Returned as-is to the frontend (no port added by backend).
     # Reverse proxy: use URL without port (e.g. https://wt.talos-hz.thaidevops.co) when the proxy listens on 443 and forwards to backend webtransport port (50052).
     # Direct expose: use URL with :port (e.g. https://wt.example.com:50052) when clients connect straight to the backend port.
-    publicUrl: "https://wt.talos-hz.thaidevops.co:8443"
+    publicUrl: "https://wt.talos-hz.thaidevops.co:4433"
     # TLS for WebTransport server: mount cert from this secret (must have tls.crt and tls.key). Same idea as local run with certs/.
     # If set, backend uses these certs instead of self-signed; hostname in cert should match publicUrl host.
     tlsSecretName: "admin-talos-hz-tls"  # e.g. "admin-talos-hz-tls" or "" to use self-signed
