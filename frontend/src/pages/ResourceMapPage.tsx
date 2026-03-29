@@ -5,8 +5,6 @@ import {
   BackgroundVariant,
   Controls,
   MiniMap,
-  getNodesBounds,
-  getViewportForBounds,
   useNodesState,
   useEdgesState,
   MarkerType,
@@ -625,26 +623,22 @@ export const ResourceMapPage = () => {
     }
 
     const pane = containerRef.current?.querySelector('.react-flow__viewport') as HTMLElement | null;
-    if (!pane) {
+    const viewportEl = containerRef.current?.querySelector('.react-flow__renderer') as HTMLElement | null;
+    if (!pane || !viewportEl) {
       toast.error('Unable to locate resource map viewport.');
       return;
     }
 
     setIsExporting(true);
 
-    const previousTransform = pane.style.transform;
     try {
-      const bounds = getNodesBounds(rfNodes);
-      const viewport = getViewportForBounds(bounds, bounds.width + 160, bounds.height + 160, 0.05, 3, 48);
-      pane.style.transform = `translate(${viewport.x}px, ${viewport.y}px) scale(${viewport.zoom})`;
-
-      const dataUrl = await toPng(pane, {
+      const dataUrl = await toPng(viewportEl, {
         cacheBust: true,
         pixelRatio: 2,
         backgroundColor: getComputedStyle(document.documentElement).getPropertyValue('--color-bg').trim() || '#0b1020',
       });
 
-      const stamp = new Date().toISOString().replace(/[:.]/g, '-');
+      const stamp = new Date().toISOString().replaceAll(':', '-').replaceAll('.', '-');
       const filename = `resource-map-${stamp}.png`;
       const link = document.createElement('a');
       link.download = filename;
@@ -654,7 +648,6 @@ export const ResourceMapPage = () => {
     } catch (exportError) {
       toast.error(exportError instanceof Error ? exportError.message : 'Failed to export resource map image.');
     } finally {
-      pane.style.transform = previousTransform;
       setIsExporting(false);
       requestAnimationFrame(() => {
         reactFlowRef.current?.fitView({ padding: 0.1, duration: 0 });
