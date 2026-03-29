@@ -5,6 +5,8 @@ import {
   BackgroundVariant,
   Controls,
   MiniMap,
+  getNodesBounds,
+  getViewportForBounds,
   useNodesState,
   useEdgesState,
   MarkerType,
@@ -14,8 +16,10 @@ import {
   type Node,
   type Edge,
   type NodeProps,
+  type ReactFlowInstance,
 } from '@xyflow/react';
 import '@xyflow/react/dist/style.css';
+import { toPng } from 'html-to-image';
 import { useNavigate } from 'react-router-dom';
 import {
   Archive,
@@ -36,10 +40,10 @@ import {
   Minimize2,
   Monitor,
   Network,
-  Pause,
-  Play,
   Plus,
   Loader,
+  RefreshCw,
+  Upload,
   X,
 } from '../components/Icons';
 import type { IconComponent } from '../components/Icons';
@@ -47,6 +51,7 @@ import { useNamespace } from '../context/NamespaceContext';
 import { useResourceMap } from '../hooks/useKubernetes';
 import type { ResourceMapNode as ApiNode, ResourceMapEdge as ApiEdge } from '../types';
 import { cn } from '../utils';
+import { toast } from 'sonner';
 
 // ── Resource kind configuration ───────────────────────────────────────────────
 interface KindConfig {
@@ -210,13 +215,76 @@ function computeLayout(apiNodes: ApiNode[], apiEdges: ApiEdge[], getNodeData: (n
     colNodes[col].push(n);
   }
 
-  // Sort within each column: namespace first, then name
-  for (const col in colNodes) {
-    colNodes[col].sort((a, b) => {
-      const nsA = a.namespace ?? '';
-      const nsB = b.namespace ?? '';
-      return nsA !== nsB ? nsA.localeCompare(nsB) : a.name.localeCompare(b.name);
+  const compareNodes = (a: ApiNode, b: ApiNode) => {
+    const nsA = a.namespace ?? '';
+    const nsB = b.namespace ?? '';
+    return nsA !== nsB ? nsA.localeCompare(nsB) : a.name.localeCompare(b.name);
+  };
+
+  const incoming = new Map<string, string[]>();
+  const outgoing = new Map<string, string[]>();
+
+  apiNodes.forEach((node) => {
+    incoming.set(node.id, []);
+    outgoing.set(node.id, []);
+  });
+
+  apiEdges.forEach((edge) => {
+    incoming.get(edge.target)?.push(edge.source);
+    outgoing.get(edge.source)?.push(edge.target);
+  });
+
+  const sortedCols = Object.keys(colNodes)
+    .map(Number)
+    .sort((a, b) => a - b);
+
+  sortedCols.forEach((col) => {
+    colNodes[col].sort(compareNodes);
+  });
+
+  const orderIndex = new Map<string, number>();
+  const refreshOrderIndex = () => {
+    sortedCols.forEach((col) => {
+      colNodes[col].forEach((node, index) => {
+        orderIndex.set(node.id, index);
+      });
     });
+  };
+
+  const getBarycenter = (neighborIds: string[]) => {
+    const positions = neighborIds
+      .map((id) => orderIndex.get(id))
+      .filter((value): value is number => value !== undefined);
+    if (positions.length === 0) {
+      return Number.POSITIVE_INFINITY;
+    }
+    return positions.reduce((sum, value) => sum + value, 0) / positions.length;
+  };
+
+  refreshOrderIndex();
+
+  for (let pass = 0; pass < 4; pass += 1) {
+    for (let i = 1; i < sortedCols.length; i += 1) {
+      const col = sortedCols[i];
+      colNodes[col].sort((a, b) => {
+        const baryA = getBarycenter(incoming.get(a.id) ?? []);
+        const baryB = getBarycenter(incoming.get(b.id) ?? []);
+        if (baryA === baryB) return compareNodes(a, b);
+        return baryA - baryB;
+      });
+      refreshOrderIndex();
+    }
+
+    for (let i = sortedCols.length - 2; i >= 0; i -= 1) {
+      const col = sortedCols[i];
+      colNodes[col].sort((a, b) => {
+        const baryA = getBarycenter(outgoing.get(a.id) ?? []);
+        const baryB = getBarycenter(outgoing.get(b.id) ?? []);
+        if (baryA === baryB) return compareNodes(a, b);
+        return baryA - baryB;
+      });
+      refreshOrderIndex();
+    }
   }
 
   const posMap: Record<string, { x: number; y: number }> = {};
@@ -425,14 +493,14 @@ export const ResourceMapPage = () => {
   const { selectedNamespaces } = useNamespace();
   const nsParam = selectedNamespaces.join(',');
   const containerRef = useRef<HTMLDivElement | null>(null);
+  const reactFlowRef = useRef<ReactFlowInstance<Node<ResourceFlowNodeData>, Edge> | null>(null);
 
-  const [isLive, setIsLive] = useState(true);
-  const [lastUpdated, setLastUpdated] = useState<Date | null>(null);
+  const [isExporting, setIsExporting] = useState(false);
 
   const REFRESH_INTERVAL = 15_000;
 
   const { data, isLoading, error, refetch } = useResourceMap(nsParam, {
-    refetchInterval: isLive ? REFRESH_INTERVAL : false,
+    refetchInterval: REFRESH_INTERVAL,
   });
 
   const [nodes, setNodes, onNodesChange] = useNodesState<Node<ResourceFlowNodeData>>([]);
@@ -440,7 +508,7 @@ export const ResourceMapPage = () => {
   const [selectedNode, setSelectedNode] = useState<ApiNode | null>(null);
   const [isFullscreen, setIsFullscreen] = useState(false);
   const [collapsedNodeIds, setCollapsedNodeIds] = useState<Set<string>>(new Set());
-  const [isSummaryPanelCollapsed, setIsSummaryPanelCollapsed] = useState(false);
+  const [isSummaryPanelCollapsed, setIsSummaryPanelCollapsed] = useState(true);
 
   const toggleNodeCollapse = useCallback((nodeId: string) => {
     setCollapsedNodeIds((previous) => {
@@ -508,10 +576,6 @@ export const ResourceMapPage = () => {
   }, [data]);
 
   useEffect(() => {
-    if (data) setLastUpdated(new Date());
-  }, [data]);
-
-  useEffect(() => {
     if (selectedNode && !visibleNodeIds.has(selectedNode.id)) {
       setSelectedNode(null);
     }
@@ -535,6 +599,68 @@ export const ResourceMapPage = () => {
   const onNodeClick = useCallback((_: React.MouseEvent, node: Node) => {
     setSelectedNode(node.data as unknown as ApiNode);
   }, []);
+
+  const handleRearrange = useCallback(() => {
+    setSelectedNode(null);
+    setNodes(rfNodes.map((node) => ({
+      ...node,
+      position: { ...node.position },
+      data: { ...node.data },
+    })));
+    setEdges(rfEdges.map((edge) => ({
+      ...edge,
+      style: edge.style ? { ...edge.style } : edge.style,
+      markerEnd: edge.markerEnd,
+    })));
+
+    requestAnimationFrame(() => {
+      reactFlowRef.current?.fitView({ padding: 0.1, duration: 400 });
+    });
+  }, [rfEdges, rfNodes, setEdges, setNodes]);
+
+  const handleExportImage = useCallback(async () => {
+    if (!reactFlowRef.current || rfNodes.length === 0) {
+      toast.error('No resource map available to export.');
+      return;
+    }
+
+    const pane = containerRef.current?.querySelector('.react-flow__viewport') as HTMLElement | null;
+    if (!pane) {
+      toast.error('Unable to locate resource map viewport.');
+      return;
+    }
+
+    setIsExporting(true);
+
+    const previousTransform = pane.style.transform;
+    try {
+      const bounds = getNodesBounds(rfNodes);
+      const viewport = getViewportForBounds(bounds, bounds.width + 160, bounds.height + 160, 0.05, 3, 48);
+      pane.style.transform = `translate(${viewport.x}px, ${viewport.y}px) scale(${viewport.zoom})`;
+
+      const dataUrl = await toPng(pane, {
+        cacheBust: true,
+        pixelRatio: 2,
+        backgroundColor: getComputedStyle(document.documentElement).getPropertyValue('--color-bg').trim() || '#0b1020',
+      });
+
+      const stamp = new Date().toISOString().replace(/[:.]/g, '-');
+      const filename = `resource-map-${stamp}.png`;
+      const link = document.createElement('a');
+      link.download = filename;
+      link.href = dataUrl;
+      link.click();
+      toast.success('Resource map image exported.');
+    } catch (exportError) {
+      toast.error(exportError instanceof Error ? exportError.message : 'Failed to export resource map image.');
+    } finally {
+      pane.style.transform = previousTransform;
+      setIsExporting(false);
+      requestAnimationFrame(() => {
+        reactFlowRef.current?.fitView({ padding: 0.1, duration: 0 });
+      });
+    }
+  }, [rfNodes]);
 
   const toggleFullscreen = useCallback(async () => {
     const el = containerRef.current;
@@ -650,6 +776,9 @@ export const ResourceMapPage = () => {
       <ReactFlow
         nodes={nodes}
         edges={edges}
+        onInit={(instance) => {
+          reactFlowRef.current = instance;
+        }}
         onNodesChange={onNodesChange}
         onEdgesChange={onEdgesChange}
         nodeTypes={nodeTypes}
@@ -759,27 +888,26 @@ export const ResourceMapPage = () => {
 
         <Panel position="top-right">
           <div className="flex items-center gap-2">
-            {/* Live / pause toggle */}
-            <div className="flex flex-col items-end gap-0.5">
-              <button
-                type="button"
-                onClick={() => setIsLive((v) => !v)}
-                className={cn(
-                  'inline-flex items-center gap-1.5 px-2 py-1.5 rounded-lg border text-[11px] font-medium transition-colors shadow-sm',
-                  isLive
-                    ? 'border-emerald-500/40 bg-emerald-500/10 text-emerald-400 hover:bg-emerald-500/20'
-                    : 'border-[var(--color-border)] bg-[var(--color-surface)] text-[var(--color-text-secondary)] hover:bg-[var(--color-hover)] hover:text-[var(--color-text)]',
-                )}
-              >
-                {isLive ? <Pause size={12} /> : <Play size={12} />}
-                <span>{isLive ? 'Live' : 'Paused'}</span>
-              </button>
-              {lastUpdated && (
-                <span className="text-[9px] text-[var(--color-text-secondary)] pr-0.5">
-                  updated {lastUpdated.toLocaleTimeString()}
-                </span>
-              )}
-            </div>
+            <button
+              type="button"
+              onClick={handleRearrange}
+              className="inline-flex items-center gap-1.5 px-2 py-1.5 rounded-lg border border-[var(--color-border)] bg-[var(--color-surface)] text-[var(--color-text-secondary)] hover:bg-[var(--color-hover)] hover:text-[var(--color-text)] text-[11px] font-medium transition-colors shadow-sm"
+              title="Rearrange nodes"
+            >
+              <RefreshCw size={12} />
+              <span>Rearrange</span>
+            </button>
+
+            <button
+              type="button"
+              onClick={handleExportImage}
+              disabled={isExporting}
+              className="inline-flex items-center gap-1.5 px-2 py-1.5 rounded-lg border border-[var(--color-border)] bg-[var(--color-surface)] text-[var(--color-text-secondary)] hover:bg-[var(--color-hover)] hover:text-[var(--color-text)] disabled:opacity-60 disabled:cursor-not-allowed text-[11px] font-medium transition-colors shadow-sm"
+              title="Export map as PNG"
+            >
+              <Upload size={12} />
+              <span>{isExporting ? 'Exporting...' : 'Export image'}</span>
+            </button>
 
             {/* Fullscreen toggle */}
             <button

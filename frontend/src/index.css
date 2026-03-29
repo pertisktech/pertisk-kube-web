@@ -89,6 +89,17 @@
   --color-dashboard-metric-quaternary: #06b6d4;
   --color-dashboard-metric-quaternary-bg: rgba(6, 182, 212, 0.12);
 
+  /* Bottom panel tokens */
+  --bottom-panel-bg: linear-gradient(
+    180deg,
+    color-mix(in srgb, var(--color-surface) 86%, transparent),
+    color-mix(in srgb, var(--color-bg) 95%, transparent)
+  );
+  --bottom-panel-tabbar-bg: color-mix(in srgb, var(--color-surface-elevated) 88%, var(--color-bg));
+  --bottom-panel-tab-active-bg: color-mix(in srgb, var(--color-bg) 72%, var(--color-surface));
+  --bottom-panel-tab-active-border: color-mix(in srgb, var(--color-primary) 34%, var(--color-border));
+  --bottom-panel-tab-hover-bg: color-mix(in srgb, var(--color-hover) 80%, var(--color-surface));
+
   /* ── Radius ───────────────────────────────────────────────────────────────── */
   --radius-xs: 2px;
   --radius-sm: 4px;
@@ -133,6 +144,12 @@ html.light {
   --shadow-sm: 0 1px 2px rgba(16, 24, 40, 0.07);
   --shadow-md: 0 8px 24px rgba(16, 24, 40, 0.1);
   --shadow-sidebar: 0 0 0 1px rgba(150, 160, 175, 0.3), 8px 0 8px rgba(16, 24, 40, 0.04);
+
+  --bottom-panel-bg: linear-gradient(180deg, rgba(255, 255, 255, 0.96), rgba(248, 250, 252, 0.94));
+  --bottom-panel-tabbar-bg: color-mix(in srgb, #ffffff 90%, var(--color-hover));
+  --bottom-panel-tab-active-bg: #ffffff;
+  --bottom-panel-tab-active-border: color-mix(in srgb, var(--color-primary) 26%, var(--color-border));
+  --bottom-panel-tab-hover-bg: color-mix(in srgb, var(--color-hover) 72%, #ffffff);
 }
 
 :root {
@@ -341,6 +358,54 @@ body,
 .label-light6  { color: #7e86ba; }
 .label-light7  { color: #a57bbc; }
 .label-grayed-out { color: var(--color-naturals-n8); }
+
+/* Bottom panel theme + tab alignment */
+.bottom-panel-shell {
+  background: var(--bottom-panel-bg);
+  backdrop-filter: blur(6px);
+}
+
+.bottom-panel-tabbar {
+  min-height: 2.6rem;
+  border-bottom: 1px solid var(--color-border);
+  background: var(--bottom-panel-tabbar-bg);
+}
+
+.bottom-panel-tabs {
+  height: 100%;
+  scrollbar-width: thin;
+}
+
+.bottom-panel-tab {
+  position: relative;
+  height: 2rem;
+  border: 1px solid transparent;
+  border-bottom: 0;
+  border-radius: 0.65rem 0.65rem 0 0;
+  transform: translateY(1px);
+}
+
+.bottom-panel-tab:hover {
+  background: var(--bottom-panel-tab-hover-bg);
+}
+
+.bottom-panel-tab.is-active {
+  background: var(--bottom-panel-tab-active-bg);
+  border-color: var(--bottom-panel-tab-active-border);
+  box-shadow: inset 0 1px 0 color-mix(in srgb, var(--color-primary) 26%, transparent);
+}
+
+.bottom-panel-controls {
+  height: 100%;
+}
+
+.bottom-panel-control-btn {
+  background: color-mix(in srgb, var(--color-surface-elevated) 86%, transparent);
+}
+
+.bottom-panel-control-btn:hover {
+  background: var(--bottom-panel-tab-hover-bg);
+}
 
 /* YAML editor — override Ace background to match terminal surface */
 .yaml-editor-pane .ace_editor,
