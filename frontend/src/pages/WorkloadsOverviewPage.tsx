@@ -33,10 +33,9 @@ import {
 import { useNamespace } from '../context/NamespaceContext';
 import type { Pod, Deployment, StatefulSet, DaemonSet, ReplicaSet, Job, CronJob } from '../types';
 
-// Pie chart and summary use dashboard-metric-primary (same as dashboard metrics) for healthy/success
-// so workload overview and dashboard metrics share the same primary pie color.
+// Workload overview uses its own modern teal accent to visually separate from dashboard cards.
 const PIE_AND_THEME = {
-  success: 'var(--color-dashboard-metric-primary)',
+  success: 'var(--color-workload-accent)',
   warning: 'var(--color-dashboard-warning)',
   danger: 'var(--color-dashboard-danger)',
   muted: 'var(--color-muted)',

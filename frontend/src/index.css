@@ -61,6 +61,15 @@
   --color-icon-danger: var(--color-red-r1);
   --color-icon-info: var(--color-blue-b1);
 
+  /* ── Status ready color (teal) ───────────────────────────────────────────── */
+  --color-status-ready: #25a7a0;
+  --color-status-ready-bg: rgba(37, 167, 160, 0.12);
+  /* Workload overview accent (modern teal) ─────────────────────────────────── */
+  --color-workload-accent: #14b8a6;
+  --color-workload-accent-strong: #0f766e;
+  --color-workload-accent-bg: color-mix(in srgb, var(--color-workload-accent) 16%, transparent);
+  --color-workload-accent-soft: color-mix(in srgb, var(--color-workload-accent) 38%, var(--color-border));
+
   /* ── Dashboard metric colors (pie charts, workload summary badges) ──────────── */
   --color-dashboard-success: var(--color-green-g1);
   --color-dashboard-success-bg: color-mix(in srgb, var(--color-green-g1) 12%, transparent);

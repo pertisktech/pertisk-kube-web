@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useState } from 'react';
-import { Trash2 } from '../components/Icons';
+import { Trash2, ScrollText } from '../components/Icons';
 import { useRealtimeNamespaces } from '../hooks/useRealtimeResources';
 import { DataTable } from '../components/DataTable';
 import { NamespaceDetailPanel } from '../components/NamespaceDetailPanel';
@@ -83,9 +83,9 @@ export const NamespacesPage = () => {
     {
       header: 'Name',
       accessor: (row: Namespace) => (
-        <span className="font-medium text-text">{row.name}</span>
+        <span className="block max-w-full truncate font-medium text-text" title={row.name}>{row.name}</span>
       ),
-      width: '25%',
+      width: '220px',
       sortable: true,
       sortKey: 'name',
     },
@@ -96,38 +96,53 @@ export const NamespacesPage = () => {
           {row.phase}
         </span>
       ),
-      width: '20%',
+      width: '120px',
       sortable: true,
       sortKey: 'status',
     },
     {
       header: 'Labels',
-      accessor: 'labels' as const,
-      width: '35%',
+      accessor: (row: Namespace) => (
+        <div className="max-w-full whitespace-normal break-all leading-5" title={row.labels || '-'}>
+          {row.labels || '-'}
+        </div>
+      ),
     },
     {
       header: 'Age',
-      accessor: (row: Namespace) => timeAgo(row.age),
-      width: '15%',
+      accessor: (row: Namespace) => (
+        <span className="block whitespace-nowrap text-xs" title={timeAgo(row.age)}>{timeAgo(row.age)}</span>
+      ),
+      width: '75px',
       sortable: true,
       sortKey: 'age',
+      headerClassName: 'px-1 py-2 text-center',
+      cellClassName: 'px-1 py-1 text-center',
     },
     {
-      header: 'Tail Logs',
-      accessor: (row: Namespace) => (
-        <button
-          type="button"
-          onClick={(event) => {
-            event.stopPropagation();
-            handleTailLogs(row.name);
-          }}
-          className="inline-flex items-center whitespace-nowrap px-2.5 py-1 rounded-md border text-xs font-medium transition-colors hover:opacity-90"
-          style={{ borderColor: 'var(--color-border)', color: 'var(--color-primary)', backgroundColor: 'var(--color-surface-elevated)' }}
-        >
-          Open Terminal
-        </button>
-      ),
-      width: '15%',
+      header: 'Logs',
+      accessor: (row: Namespace) => {
+        return (
+          <div className="inline-flex items-center justify-center">
+            <button
+              type="button"
+              onClick={(event) => {
+                event.stopPropagation();
+                handleTailLogs(row.name);
+              }}
+              title="Tail Logs"
+              aria-label="Tail logs"
+              className="inline-flex items-center justify-center h-5 w-5 rounded border transition-colors hover:opacity-90"
+              style={{ borderColor: 'var(--color-border)', color: 'var(--color-primary)', backgroundColor: 'var(--color-surface-elevated)' }}
+            >
+              <ScrollText size={12} />
+            </button>
+          </div>
+        );
+      },
+      width: '75px',
+      headerClassName: 'px-0.5 py-2 text-center',
+      cellClassName: 'px-0.5 py-1 text-center',
     },
   ];
 
@@ -165,23 +180,29 @@ export const NamespacesPage = () => {
         <h1 className="text-xl font-semibold text-text">Namespaces <span className="text-base font-normal text-text-secondary">(Manage Kubernetes namespaces)</span></h1>
       </div>
 
-      <DataTable
-        columns={columns}
-        data={sortedNamespaces}
-        isLoading={isLoading}
-        error={error}
-        rowKey="name"
-        onRowClick={(row) => {
-          setSelectedNamespace(row);
-          setPanelOpen(true);
-        }}
-        selectedRowKey={panelOpen ? selectedNamespace?.name : undefined}
-        sortState={sortState}
-        onSortChange={(nextSort) => setSortState(nextSort as { key: NamespaceSortKey; direction: 'asc' | 'desc' })}
-        enableRowSelection={true}
-        selectedRows={selectedRows}
-        onRowSelectionChange={(rows) => setSelectedRows(rows)}
-      />
+      <div
+        className="space-y-2"
+      >
+        <DataTable
+          columns={columns}
+          data={sortedNamespaces}
+          isLoading={isLoading}
+          error={error}
+          rowKey="name"
+          onRowClick={(row) => {
+            setSelectedNamespace(row);
+            setPanelOpen(true);
+          }}
+          selectedRowKey={panelOpen ? selectedNamespace?.name : undefined}
+          sortState={sortState}
+          onSortChange={(nextSort) => setSortState(nextSort as { key: NamespaceSortKey; direction: 'asc' | 'desc' })}
+          enableRowSelection={true}
+          selectedRows={selectedRows}
+          onRowSelectionChange={(rows) => setSelectedRows(rows)}
+          autoFitContent={false}
+          allowHorizontalScroll={false}
+        />
+      </div>
 
       {panelOpen && selectedNamespace && (
         <>

@@ -1,6 +1,5 @@
 import { usePods, useNodes } from '../hooks/useKubernetes';
 import { Card } from './Card';
-import { Loader } from './Icons';
 import { useTheme } from '../context/ThemeContext';
 import {
   Chart as ChartJS,
@@ -37,18 +36,18 @@ export const MetricsCharts = () => {
     return (
       <Card title="Metrics">
         <div className="flex items-center justify-center h-64">
-          <Loader size={24} className="animate-spin text-primary" />
+          <div className="animate-pulse text-text-secondary">Loading...</div>
         </div>
       </Card>
     );
   }
 
-  // Calculate theme colors — chart primary (dark green) matches dashboard/workload overview
+  // Calculate theme colors — chart primary (teal) matches dashboard/workload overview
   const isDark = theme?.isDark;
   const textColor = isDark ? '#d4d4d4' : '#000000';
   const gridColor = isDark ? '#333333' : '#e5e5e5';
   const backgroundColor = isDark ? '#1e1e1e' : '#ffffff';
-  const chartPrimaryGreen = '#2d9663'; // --color-green-g2, dark green for chart series
+  const chartPrimaryGreen = '#25a7a0'; // --color-status-ready teal, matches node readiness metric
 
   // Pod Status Distribution
   const podStatusCounts = {

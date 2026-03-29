@@ -9,9 +9,9 @@ interface ResizablePanelProps {
 
 export const ResizablePanel = ({
   children,
-  minWidth = 320,
-  maxWidth = 800,
-  defaultWidth = '520px',
+  minWidth = 280,
+  maxWidth = 720,
+  defaultWidth = '460px',
 }: ResizablePanelProps) => {
   const [width, setWidth] = useState<string>(defaultWidth);
   const [isResizing, setIsResizing] = useState(false);

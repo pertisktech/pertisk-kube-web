@@ -1,6 +1,6 @@
 import { useEffect, useMemo, useState } from 'react';
 import YAML from 'yaml';
-import { Trash2 } from '../components/Icons';
+import { ScrollText, Trash2 } from '../components/Icons';
 import { useRealtimeDeployments } from '../hooks/useRealtimeResources';
 import { useNamespace } from '../context/NamespaceContext';
 import { DataTable } from '../components/DataTable';
@@ -87,33 +87,31 @@ const sanitizeDeploymentYamlForEdit = (yamlText: string) => {
   }
 };
 
-const buildDeploymentTailSelector = (deployment: Deployment): string | null => {
-  const preferredEntries = Object.entries(deployment.selector_labels ?? {}).filter(
+const buildDeploymentKtailCommand = (deployment: Deployment): string => {
+  const selectorEntries = Object.entries(deployment.selector_labels ?? {}).filter(
     ([key, value]) => key.trim().length > 0 && String(value).trim().length > 0
   );
 
-  if (preferredEntries.length > 0) {
-    return preferredEntries
+  if (selectorEntries.length > 0) {
+    const preferredSelector = selectorEntries
       .sort(([left], [right]) => left.localeCompare(right))
       .map(([key, value]) => `${key}=${String(value)}`)
       .join(',');
+    return `ktail -n ${deployment.namespace} -l ${preferredSelector}`;
   }
 
   const labels = deployment.labels ?? {};
-  const fallbackKeys = ['app.kubernetes.io/name', 'k8s-app', 'app'];
-
-  for (const key of fallbackKeys) {
-    const value = labels[key];
-    if (typeof value === 'string' && value.trim().length > 0) {
-      return `${key}=${value}`;
-    }
+  const preferredKeys = ['app.kubernetes.io/instance', 'app.kubernetes.io/name', 'app', 'k8s-app'];
+  const fallbackSelector = preferredKeys
+    .map((key) => [key, labels[key]] as const)
+    .filter(([, value]) => typeof value === 'string' && value.trim().length > 0)
+    .map(([key, value]) => `${key}=${String(value)}`)
+    .join(',');
+  if (fallbackSelector) {
+    return `ktail -n ${deployment.namespace} -l ${fallbackSelector}`;
   }
 
-  const firstEntry = Object.entries(labels).find(
-    ([key, value]) => key.trim().length > 0 && String(value).trim().length > 0
-  );
-
-  return firstEntry ? `${firstEntry[0]}=${String(firstEntry[1])}` : null;
+  return `ktail -n ${deployment.namespace}`;
 };
 
 export const DeploymentsPage = () => {
@@ -169,15 +167,11 @@ export const DeploymentsPage = () => {
   };
 
   const handleTailLogs = (deployment: Deployment) => {
-    const selector = buildDeploymentTailSelector(deployment);
-    if (!selector) {
-      return;
-    }
-
+    const command = buildDeploymentKtailCommand(deployment);
     openPanelTab({
       type: 'host-shell',
       title: `ktail ${deployment.name}`,
-      initialCommand: `ktail -n ${deployment.namespace} -l "${selector}"`,
+      initialCommand: command,
     });
   };
 
@@ -276,9 +270,36 @@ export const DeploymentsPage = () => {
     {
       header: 'Age',
       accessor: (row: Deployment) => timeAgo(row.age),
-      width: '8%',
+      width: '1%',
       sortable: true,
       sortKey: 'age',
+      headerClassName: 'px-1 py-2 text-center',
+      cellClassName: 'px-1 py-1.5 text-center',
+    },
+    {
+      header: 'Logs',
+      accessor: (row: Deployment) => {
+        return (
+          <div className="inline-flex items-center justify-center">
+            <button
+              type="button"
+              onClick={(event) => {
+                event.stopPropagation();
+                handleTailLogs(row);
+              }}
+              title="Tail Logs"
+              aria-label="Tail logs"
+              className="inline-flex items-center justify-center h-5 w-5 rounded border transition-colors hover:opacity-90"
+              style={{ borderColor: 'var(--color-border)', color: 'var(--color-primary)', backgroundColor: 'var(--color-surface-elevated)' }}
+            >
+              <ScrollText size={12} />
+            </button>
+          </div>
+        );
+      },
+      width: '36px',
+      headerClassName: 'px-0.5 py-2 text-center',
+      cellClassName: 'px-0.5 py-1 text-center',
     },
   ];
 

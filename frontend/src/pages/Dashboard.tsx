@@ -2,7 +2,6 @@ import { useMemo } from 'react';
 import { Link } from 'react-router-dom';
 import { PieChart, Pie, Cell, ResponsiveContainer, Tooltip } from 'recharts';
 import { useDashboard, useNodes, usePods } from '../hooks/useKubernetes';
-import { StatusBadge } from '../components/StatusBadge';
 import { WorkloadSummary } from '../components/WorkloadSummary';
 import { MetricsCharts } from '../components/MetricsCharts';
 import { GaugeChart } from '../components/GaugeChart';
@@ -22,7 +21,7 @@ import {
 import { formatCpuRange, formatK8sQuantityUsedAlloc, formatMemoryUsedAlloc } from '../utils';
 import { K8sNode } from '../types';
 
-const CHART_USED = 'var(--color-dashboard-metric-primary)';
+const CHART_USED = '#14b8a6';
 const CHART_AVAILABLE = 'var(--color-muted)';
 
 // Helper to get IPv4 and IPv6 for display (values only, no labels)
@@ -399,7 +398,17 @@ export const Dashboard = () => {
           <div className="mt-4 pt-4 border-t border-border flex items-center gap-4 text-sm text-text-secondary">
             <span className="flex items-center gap-1.5">
               <Server size={14} className="text-dashboard-metric-quaternary" />
-              Nodes: {readyNodeCount}/{totalNodeCount} ready
+              Nodes:{' '}
+              <span style={{
+                color: nodeHealthPercent === 100
+                  ? 'var(--color-status-ready)'
+                  : nodeHealthPercent >= 80
+                    ? 'var(--color-dashboard-warning)'
+                    : 'var(--color-dashboard-danger)',
+                fontWeight: 600,
+              }}>
+                {readyNodeCount}/{totalNodeCount} ready
+              </span>
             </span>
             <span>
               {dashboard?.cluster_name || 'kubernetes-cluster'} • {dashboard?.kube_version || 'Unknown'}
@@ -417,9 +426,15 @@ export const Dashboard = () => {
             </div>
             <div>
               <h2 className="text-xl font-bold text-text">Nodes</h2>
-              <p className="text-sm text-text-secondary">
+              <p className="text-sm font-medium" style={{
+                color: nodeHealthPercent === 100
+                  ? 'var(--color-status-ready)'
+                  : nodeHealthPercent >= 80
+                    ? 'var(--color-dashboard-warning)'
+                    : 'var(--color-dashboard-danger)',
+              }}>
                 {readyNodeCount}/{totalNodeCount} ready
-                {totalNodeCount > 0 && ` · ${totalNodeCount} total`}
+                {totalNodeCount > 0 && <span className="text-text-secondary font-normal"> · {totalNodeCount} total</span>}
               </p>
             </div>
           </div>
@@ -459,7 +474,16 @@ export const Dashboard = () => {
                     <span className="font-semibold text-text truncate min-w-0" title={node.name}>
                       {node.name}
                     </span>
-                    <StatusBadge status={isReady ? 'Ready' : 'NotReady'} />
+                    <span
+                      className="inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-xs font-medium whitespace-nowrap flex-shrink-0"
+                      style={{
+                        background: isReady ? 'var(--color-status-ready-bg)' : 'var(--color-dashboard-danger-bg)',
+                        color: isReady ? 'var(--color-status-ready)' : 'var(--color-dashboard-danger)',
+                      }}
+                    >
+                      <span className="w-1.5 h-1.5 rounded-full flex-shrink-0" style={{ backgroundColor: 'currentColor' }} />
+                      {isReady ? 'Ready' : 'Not Ready'}
+                    </span>
                   </div>
                   {node.roles?.length ? (
                     <div className="flex flex-wrap gap-1.5 mb-3">
