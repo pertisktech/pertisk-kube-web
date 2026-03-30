@@ -75,7 +75,7 @@ export const NamespacesPage = () => {
     openPanelTab({
       type: 'host-shell',
       title: `ktail ${namespace}`,
-      initialCommand: `ktail -n ${namespace}`,
+      initialCommand: `ktail --color always --color-scheme modern -n ${namespace}`,
     });
   };
 

@@ -43,16 +43,13 @@ RUN find target/release -maxdepth 1 -name 'pertisk-kube-backend*' -delete 2>/dev
     find target/release/.fingerprint -name 'pertisk-kube-backend-*' -exec rm -rf {} + 2>/dev/null; \
     true
 
-# ─── Stage 3: ktail (statically linked, built once) ──────────────────────────
-FROM golang:1.25-alpine AS ktail-builder
+# ─── Stage 3: ktail (Rust version, statically linked, built once) ────────────
+FROM rust:alpine AS ktail-builder
 WORKDIR /src
-RUN apk add --no-cache git
-# Upgrade deps to fix CVEs: x/crypto (CVE-2025-22869, -47914, -58181), x/net (CVE-2023-45288, CVE-2025-22870, -22872)
-# x/crypto v0.45 requires x/net v0.47
-RUN git clone --depth=1 --branch v1.4.0 https://github.com/atombender/ktail.git . && \
-    go get golang.org/x/crypto@v0.45.0 golang.org/x/net@v0.47.0 golang.org/x/oauth2@v0.27.0 google.golang.org/protobuf@v1.33.0 && \
-    go mod tidy && \
-    go build -o /out/ktail .
+RUN apk add --no-cache git build-base pkgconfig openssl-dev openssl-libs-static
+RUN git clone --depth=1 https://github.com/pertisktech/pertisk-ktail.git . && \
+    cargo build --release && \
+    mv target/release/ktail /out/ktail
 
 # ─── Stage 4: Runtime environment (system tools, shell, fonts) ───────────────
 FROM alpine:latest AS runtime

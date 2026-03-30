@@ -97,7 +97,7 @@ const buildDeploymentKtailCommand = (deployment: Deployment): string => {
       .sort(([left], [right]) => left.localeCompare(right))
       .map(([key, value]) => `${key}=${String(value)}`)
       .join(',');
-    return `ktail -n ${deployment.namespace} -l ${preferredSelector}`;
+    return `ktail --color always --color-scheme modern -n ${deployment.namespace} -l ${preferredSelector}`;
   }
 
   const labels = deployment.labels ?? {};
@@ -108,10 +108,10 @@ const buildDeploymentKtailCommand = (deployment: Deployment): string => {
     .map(([key, value]) => `${key}=${String(value)}`)
     .join(',');
   if (fallbackSelector) {
-    return `ktail -n ${deployment.namespace} -l ${fallbackSelector}`;
+    return `ktail --color always --color-scheme modern -n ${deployment.namespace} -l ${fallbackSelector}`;
   }
 
-  return `ktail -n ${deployment.namespace}`;
+  return `ktail --color always --color-scheme modern -n ${deployment.namespace}`;
 };
 
 export const DeploymentsPage = () => {
