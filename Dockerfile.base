@@ -48,8 +48,11 @@ FROM rust:alpine AS ktail-builder
 WORKDIR /src
 RUN apk add --no-cache git build-base pkgconfig openssl-dev openssl-libs-static
 RUN git clone --depth=1 https://github.com/pertisktech/pertisk-ktail.git . && \
-    cargo build --release && \
-    mv target/release/ktail /out/ktail
+    cargo build --release --bins && \
+    mkdir -p /out && \
+    BIN_PATH="$(find target/release -maxdepth 1 -type f -perm -111 ! -name '*.so' ! -name 'build-script-*' | head -n1)" && \
+    test -n "$BIN_PATH" && \
+    install -m 0755 "$BIN_PATH" /out/ktail
 
 # ─── Stage 4: Runtime environment (system tools, shell, fonts) ───────────────
 FROM alpine:latest AS runtime
