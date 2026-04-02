@@ -108,7 +108,7 @@ export const ApplyYamlDialog = ({ onClose }: ApplyYamlDialogProps) => {
         </div>
 
         {/* Editor */}
-        <div className="flex-1 overflow-hidden">
+        <div className="yaml-editor-pane flex-1 overflow-hidden">
           <AceEditor
             mode="yaml"
             theme={theme?.isDark ? 'tomorrow_night' : 'github'}
@@ -124,8 +124,17 @@ export const ApplyYamlDialog = ({ onClose }: ApplyYamlDialogProps) => {
               wrap: false,
               tabSize: 2,
               showLineNumbers: true,
+              displayIndentGuides: false,
+              showPrintMargin: false,
             }}
             editorProps={{ $blockScrolling: true }}
+            onLoad={(editor) => {
+              const vBar = editor.renderer.scrollBarV;
+              vBar.element.style.display = 'none';
+              vBar.width = 0;
+              vBar.setVisible = () => {};
+              editor.resize(true);
+            }}
           />
         </div>
 

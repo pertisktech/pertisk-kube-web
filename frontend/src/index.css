@@ -417,6 +417,62 @@ body,
   background: color-mix(in srgb, var(--color-surface-elevated) 85%, black 15%) !important;
 }
 
+/* Base foreground = value color (unquoted scalars) */
+.yaml-editor-pane .ace-tomorrow-night,
+.yaml-editor-pane .ace-github {
+  color: #C18971 !important;
+}
+
+/* Keys (meta.tag) */
+.yaml-editor-pane .ace_meta.ace_tag {
+  color: #3CC7B0 !important;
+}
+
+/* Quoted string values */
+.yaml-editor-pane .ace_string {
+  color: #C18971 !important;
+}
+
+/* Numbers */
+.yaml-editor-pane .ace_constant.ace_numeric {
+  color: var(--color-text) !important;
+}
+
+/* Booleans / null */
+.yaml-editor-pane .ace_constant.ace_language {
+  color: #549AD3 !important;
+}
+
+/* Structural: colon separators, list markers */
+.yaml-editor-pane .ace_keyword,
+.yaml-editor-pane .ace_list.ace_markup {
+  color: var(--color-text) !important;
+  opacity: 0.45;
+}
+
+/* Comments */
+.yaml-editor-pane .ace_comment {
+  color: var(--color-text) !important;
+  opacity: 0.35;
+}
+
+/* Hide vertical scrollbar */
+.yaml-editor-pane .ace_scrollbar-v {
+  display: none !important;
+}
+
+/* Hide indent guides */
+.yaml-editor-pane .ace_indent-guide {
+  background: none !important;
+  border: none !important;
+}
+
+/* Hide print margin */
+.yaml-editor-pane .ace_print-margin {
+  visibility: hidden !important;
+  display: none !important;
+}
+
 /* Workload overview charts — use theme text color so labels are visible in dark/light mode */
 .chart-theme-text text {
   fill: var(--color-text) !important;
