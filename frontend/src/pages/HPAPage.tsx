@@ -294,7 +294,7 @@ export const HPAPage = () => {
       )}
 
       {selectedRows.length > 0 && (
-        <div className="fixed bottom-6 left-1/2 -translate-x-1/2 z-[110] flex items-center gap-3 px-4 py-3 bg-surface border-2 border-orange-500 rounded-xl shadow-2xl animate-in fade-in slide-in-from-bottom-4 duration-200">
+        <div className="fixed bottom-6 left-1/2 -translate-x-1/2 z-[110] flex items-center gap-3 px-4 py-3 bg-surface border-2 border-violet-500 rounded-xl shadow-2xl animate-in fade-in slide-in-from-bottom-4 duration-200">
           <span className="text-sm text-text-secondary font-medium">{selectedRows.length} selected</span>
           <div className="w-px h-4 bg-border" />
           <button
