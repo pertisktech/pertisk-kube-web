@@ -171,7 +171,7 @@ make dev
 ```
 
 - Backend hot reload uses `cargo watch` (install with `make tools` if needed)
-- Frontend hot reload uses Vite dev server on `http://localhost:3000`
+- Frontend hot reload uses Vite dev server on `http://localhost:3001`
 
 ### Local run with Kubernetes (k8s kubeconfig)
 
@@ -350,7 +350,8 @@ All API routes are under `/api`. Protected routes require `Authorization: Bearer
 
 ### Environment Variables (Backend)
 - `KUBECONFIG` - Path to kubeconfig file (optional, uses in-cluster config if not set)
-- `PORT` - Server port (default: 8091)
+- `PORT` or `APP_PORT` - Server port (default: `8091`)
+- `GRPC_PORT` - gRPC server port (default: `50061` for local Make targets)
 - `RUST_LOG` - Log level (default: info)
 - `USERNAME` - Dashboard login username (default: admin)
 - `PASSWORD` - Dashboard login password (default: admin)

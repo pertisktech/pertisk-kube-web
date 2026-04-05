@@ -375,13 +375,22 @@ async fn main() -> anyhow::Result<()> {
         .with_state(state)
         .layer(cors);
 
-    let addr: SocketAddr = ([0, 0, 0, 0], 8091).into();
+    let http_port: u16 = std::env::var("PORT")
+        .ok()
+        .or_else(|| std::env::var("APP_PORT").ok())
+        .and_then(|v| v.parse().ok())
+        .unwrap_or(8091);
+    let addr: SocketAddr = ([0, 0, 0, 0], http_port).into();
     info!("Starting HTTP server on {}", addr);
     let listener = tokio::net::TcpListener::bind(addr).await?;
     let http_server = axum::serve(listener, app);
 
     // gRPC server
-    let grpc_addr: SocketAddr = ([0, 0, 0, 0], 50051).into();
+    let grpc_port: u16 = std::env::var("GRPC_PORT")
+        .ok()
+        .and_then(|v| v.parse().ok())
+        .unwrap_or(50051);
+    let grpc_addr: SocketAddr = ([0, 0, 0, 0], grpc_port).into();
     info!("Starting gRPC server on {}", grpc_addr);
     
     let grpc_service = grpc_service::KubernetesWatchService::new(grpc_client).into_server();
