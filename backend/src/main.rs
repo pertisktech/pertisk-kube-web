@@ -1,7 +1,9 @@
 use axum::{
+    body::Body,
     extract::State,
-    http::StatusCode,
-    middleware,
+    http::{header, Request, StatusCode},
+    middleware::{self, Next},
+    response::Response,
     response::IntoResponse,
     routing::{delete, get, post},
     Json, Router,
@@ -369,6 +371,7 @@ async fn main() -> anyhow::Result<()> {
         .route_service("/favicon.svg", ServeFile::new(favicon_svg))
         .route_service("/", ServeFile::new(index_html.clone()))
         .fallback_service(ServeFile::new(index_html))
+        .layer(middleware::from_fn(normalize_websocket_upgrade_headers))
         .with_state(state)
         .layer(cors);
 
@@ -401,6 +404,30 @@ async fn health() -> impl IntoResponse {
         status: "ok".into(),
     };
     (StatusCode::OK, Json(body))
+}
+
+async fn normalize_websocket_upgrade_headers(
+    mut request: Request<Body>,
+    next: Next,
+) -> Response {
+    let path = request.uri().path();
+    if path == "/ws" || path == "/api/exec" {
+        let headers = request.headers_mut();
+        let has_upgrade = headers
+            .get(header::UPGRADE)
+            .and_then(|value| value.to_str().ok())
+            .map(|value| value.eq_ignore_ascii_case("websocket"))
+            .unwrap_or(false);
+
+        if has_upgrade && !headers.contains_key(header::CONNECTION) {
+            headers.insert(
+                header::CONNECTION,
+                header::HeaderValue::from_static("upgrade"),
+            );
+        }
+    }
+
+    next.run(request).await
 }
 
 async fn readiness(State(state): State<AppState>) -> impl IntoResponse {
