@@ -5,6 +5,14 @@ import { WebLinksAddon } from '@xterm/addon-web-links';
 import '@xterm/xterm/css/xterm.css';
 import { useTheme } from '../context/ThemeContext';
 
+declare global {
+  interface Window {
+    __PERTISK_CONFIG__?: {
+      backendUrl?: string;
+    };
+  }
+}
+
 interface TerminalProps {
   podName: string;
   namespace: string;
@@ -12,6 +20,41 @@ interface TerminalProps {
   initialCommand?: string;
   onClose?: () => void;
 }
+
+const buildExecWebSocketUrl = (namespace: string, podName: string, containerName?: string): string => {
+  const runtimeConfig = globalThis as typeof globalThis & {
+    __PERTISK_CONFIG__?: { backendUrl?: string };
+  };
+  const configuredBackendUrl = runtimeConfig.__PERTISK_CONFIG__?.backendUrl?.trim();
+  const apiBase = configuredBackendUrl && configuredBackendUrl.length > 0 ? configuredBackendUrl : '/api';
+
+  try {
+    const backendUrl = new URL(apiBase, globalThis.location.origin);
+    backendUrl.protocol = backendUrl.protocol === 'https:' ? 'wss:' : 'ws:';
+
+    const normalizedPath = backendUrl.pathname.replace(/\/+$/, '');
+    backendUrl.pathname = normalizedPath.endsWith('/api')
+      ? `${normalizedPath}/exec`
+      : `${normalizedPath}/api/exec`;
+
+    backendUrl.searchParams.set('namespace', namespace);
+    backendUrl.searchParams.set('pod', podName);
+    if (containerName) {
+      backendUrl.searchParams.set('container', containerName);
+    }
+
+    return backendUrl.toString();
+  } catch {
+    const protocol = globalThis.location.protocol === 'https:' ? 'wss:' : 'ws:';
+    const fallbackUrl = new URL(`${protocol}//${globalThis.location.host}/api/exec`);
+    fallbackUrl.searchParams.set('namespace', namespace);
+    fallbackUrl.searchParams.set('pod', podName);
+    if (containerName) {
+      fallbackUrl.searchParams.set('container', containerName);
+    }
+    return fallbackUrl.toString();
+  }
+};
 
 export const Terminal = ({ podName, namespace, containerName, initialCommand }: TerminalProps) => {
   const terminalRef = useRef<HTMLDivElement>(null);
@@ -135,10 +178,7 @@ export const Terminal = ({ podName, namespace, containerName, initialCommand }: 
     xterm.focus();
 
     // Connect WebSocket for shell
-    const protocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
-    const wsUrl = `${protocol}//${window.location.host}/api/exec?namespace=${encodeURIComponent(
-      namespace
-    )}&pod=${encodeURIComponent(podName)}${containerName ? `&container=${encodeURIComponent(containerName)}` : ''}`;
+    const wsUrl = buildExecWebSocketUrl(namespace, podName, containerName);
 
     const ws = new WebSocket(wsUrl);
     wsRef.current = ws;
