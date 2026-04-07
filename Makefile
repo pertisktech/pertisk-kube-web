@@ -15,6 +15,10 @@ BASE_IMAGE_PREFIX ?= $(DOCKER_REGISTRY)/pertisksoft/pertisk-kube/web-base
 BASE_TAG ?= latest
 HELM_RELEASE ?= pertisk-kube
 HELM_NAMESPACE ?= pertisk-rproxy
+HELM_CHART_DIR ?= ./helm/pertisk-kube
+HELM_PACKAGE_DIR ?= ./dist/helm
+HELM_OCI_REGISTRY ?= $(DOCKER_REGISTRY)
+HELM_OCI_REPOSITORY ?= pertisksoft/helm-charts
 # Local app ports (keep different from pertisk-kube-app defaults)
 # Kubernetes/Helm service ports remain defined in helm values.
 APP_PORT ?= 8091
@@ -24,6 +28,7 @@ GRPC_PORT ?= 50061
 .PHONY: docker-build docker-build-amd64 docker-build-arm64 docker-build-multi docker-push docker-push-multi
 .PHONY: docker-base-build docker-base-push docker-base-push-multi
 .PHONY: helm-install helm-upgrade helm-uninstall helm-template helm-deploy port-forward ingress-hosts lb-url
+.PHONY: helm-lint helm-package helm-push helm-release
 .PHONY: skaffold-run skaffold-run-prod skaffold-dev skaffold-delete skaffold-build
 .PHONY: release version
 
@@ -185,15 +190,15 @@ docker-push-multi: docker-build-multi
 
 # Helm targets
 helm-template:
-	helm template $(HELM_RELEASE) ./helm/pertisk-kube -n $(HELM_NAMESPACE)
+	helm template $(HELM_RELEASE) $(HELM_CHART_DIR) -n $(HELM_NAMESPACE)
 
 helm-install:
-	helm install $(HELM_RELEASE) ./helm/pertisk-kube -n $(HELM_NAMESPACE) --create-namespace \
+	helm install $(HELM_RELEASE) $(HELM_CHART_DIR) -n $(HELM_NAMESPACE) --create-namespace \
 		--set app.image.tag=$(DOCKER_TAG)
 	@echo "✓ Installed $(HELM_RELEASE) with version $(DOCKER_TAG)"
 
 helm-upgrade:
-	helm upgrade $(HELM_RELEASE) ./helm/pertisk-kube -n $(HELM_NAMESPACE) \
+	helm upgrade $(HELM_RELEASE) $(HELM_CHART_DIR) -n $(HELM_NAMESPACE) \
 		--set app.image.tag=$(DOCKER_TAG)
 	@echo "✓ Upgraded $(HELM_RELEASE) to version $(DOCKER_TAG)"
 
@@ -227,10 +232,39 @@ port-forward:
 # Build, push multi-arch Docker image and deploy with Helm
 helm-deploy: docker-build-multi
 	@echo "Deploying pertisk-kube with image tag $(DOCKER_TAG)..."
-	helm upgrade --install $(HELM_RELEASE) ./helm/pertisk-kube -n $(HELM_NAMESPACE) \
+	helm upgrade --install $(HELM_RELEASE) $(HELM_CHART_DIR) -n $(HELM_NAMESPACE) \
 		--create-namespace \
 		--set app.image.tag=$(DOCKER_TAG)
 	@echo "✓ Deployed pertisk-kube version $(DOCKER_TAG)"
+
+# Validate the chart before packaging.
+helm-lint:
+	helm lint $(HELM_CHART_DIR)
+
+# Package chart into HELM_PACKAGE_DIR and print artifact path.
+helm-package: helm-lint
+	@mkdir -p $(HELM_PACKAGE_DIR)
+	@PKG=$$(helm package $(HELM_CHART_DIR) \
+		--version $(VERSION) \
+		--app-version $(DOCKER_TAG) \
+		-d $(HELM_PACKAGE_DIR) | awk '{print $$NF}'); \
+	echo "✓ Chart packaged: $$PKG"
+
+# Push latest packaged chart archive to OCI registry.
+# Requires registry auth (run: helm registry login <registry>). 
+helm-push: helm-package
+	@PKG=$$(ls -1t $(HELM_PACKAGE_DIR)/*.tgz 2>/dev/null | head -n1); \
+	if [ -z "$$PKG" ]; then \
+		echo "No packaged chart found in $(HELM_PACKAGE_DIR)"; \
+		exit 1; \
+	fi; \
+	echo "Pushing $$PKG to oci://$(HELM_OCI_REGISTRY)/$(HELM_OCI_REPOSITORY)"; \
+	helm push "$$PKG" "oci://$(HELM_OCI_REGISTRY)/$(HELM_OCI_REPOSITORY)"; \
+	echo "✓ Chart pushed: oci://$(HELM_OCI_REGISTRY)/$(HELM_OCI_REPOSITORY)"
+
+# Full Helm chart release flow: lint -> package -> push.
+helm-release: helm-push
+	@echo "✓ Helm chart release complete"
 
 # Complete release: build multi-arch and deploy
 release: docker-build-multi helm-deploy

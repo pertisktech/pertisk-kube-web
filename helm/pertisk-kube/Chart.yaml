@@ -1,6 +1,9 @@
 apiVersion: v2
 name: pertisk-kube
-description: A Helm chart for Pertisk Kubernetes Web Application
+description: Web-based Kubernetes dashboard for monitoring and managing cluster resources, workloads, networking, storage, RBAC, and backups
+home: https://github.com/pertisktech/pertisk-kube-web
+sources:
+  - https://github.com/pertisktech/pertisk-kube-web
 type: application
 version: 0.1.0
 appVersion: "1.0.0"

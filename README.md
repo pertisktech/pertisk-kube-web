@@ -198,6 +198,9 @@ make run-ingress-k8s
 | `make helm-install` | Helm install with image tag from `DOCKER_TAG` |
 | `make helm-upgrade` | Helm upgrade with `DOCKER_TAG` |
 | `make helm-deploy` | Build multi-arch image and `helm upgrade --install` |
+| `make helm-package` | Lint and package chart archive to `dist/helm/` |
+| `make helm-push` | Package and push chart archive to OCI registry |
+| `make helm-release` | Full chart release flow (lint -> package -> push) |
 | `make release` | Same as helm-deploy (full release) |
 | `make port-forward` | Forward app service to localhost (APP_PORT / GRPC_PORT) |
 | `make ingress-hosts` | Print ingress host(s) for the release |
@@ -205,6 +208,28 @@ make run-ingress-k8s
 | `make run-ingress-k8s` | Dev: frontend build watch + backend with `K8S_KUBECONFIG` |
 
 Override defaults: `DOCKER_TAG`, `HELM_NAMESPACE`, `HELM_RELEASE`, `K8S_KUBECONFIG`, etc. See top of `Makefile`.
+
+### Helm Chart Release (Upload)
+
+Publish the Helm chart to an OCI registry:
+
+```bash
+# 1) Login once to OCI registry
+helm registry login harbor.tools.thaidevops.co
+
+# 2) Run full chart release
+make helm-release
+```
+
+Optional overrides:
+
+```bash
+make helm-release \
+  HELM_OCI_REGISTRY=harbor.tools.thaidevops.co \
+  HELM_OCI_REPOSITORY=pertisksoft/helm-charts
+```
+
+The packaged chart archive is written to `dist/helm/` before upload.
 
 **Skaffold:** `make skaffold-run`, `make skaffold-run-prod`, `make skaffold-dev`, `make skaffold-delete` (use `K8S_KUBECONFIG` for kubeconfig).
 
