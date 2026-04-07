@@ -243,6 +243,7 @@ function ChartCard({ title, icon: Icon, data, total, linkTo, isLoading }: ChartC
                 outerRadius={70}
                 paddingAngle={2}
                 dataKey="value"
+                isAnimationActive={false}
                 label={({ name, percent }) =>
                   (percent ?? 0) > 0.05 ? `${name ?? ''} (${((percent ?? 0) * 100).toFixed(0)}%)` : ''
                 }
