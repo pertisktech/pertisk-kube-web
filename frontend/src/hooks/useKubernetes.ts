@@ -41,6 +41,7 @@ import type {
   HelmRelease,
   HelmChart,
   HelmRevision,
+  HelmResource,
   ResourceMapData,
   WorkloadMetricSeriesResponse,
 } from '../types';
@@ -1186,6 +1187,25 @@ export const useHelmReleaseHistory = (namespace: string, name: string) => {
   return useQuery({
     queryKey: ['helm-release-history', namespace, name],
     queryFn: () => getHelmReleaseHistory(namespace, name),
+    enabled: !!namespace && !!name,
+  });
+};
+
+/** Fetches all K8s resources in the release manifest (helm get manifest). */
+export const useHelmReleaseResources = (namespace: string, name: string) => {
+  return useQuery({
+    queryKey: ['helm-release-resources', namespace, name],
+    queryFn: async (): Promise<HelmResource[]> => {
+      const res = await apiFetch(
+        `/helm/releases/${encodeURIComponent(namespace)}/${encodeURIComponent(name)}/resources`,
+      );
+      if (!res.ok) {
+        const json = (await res.json().catch(() => ({}))) as { message?: string };
+        throw new Error(json.message || `Failed to load resources (${res.status})`);
+      }
+      const json = (await res.json()) as { data?: HelmResource[] };
+      return Array.isArray(json.data) ? json.data : [];
+    },
     enabled: !!namespace && !!name,
   });
 };

@@ -28,6 +28,14 @@ export interface HelmRevision {
   description: string;
 }
 
+/** A single K8s resource belonging to a Helm release manifest. */
+export interface HelmResource {
+  api_version: string;
+  kind: string;
+  name: string;
+  namespace: string;
+}
+
 export interface HelmChart {
   name: string;
   description: string;

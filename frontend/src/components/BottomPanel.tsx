@@ -377,21 +377,32 @@ const InstallChartTabContent = ({
             </span>
           )}
           <span className="text-text-secondary">Namespace</span>
-          <select
+          <input
+            type="text"
+            list="helm-install-namespace-options"
             value={namespace}
             onChange={(e) => setNamespace(e.target.value)}
             className="border border-border rounded px-2 py-1 bg-bg text-text focus:outline-none focus:border-primary min-w-[7rem]"
-          >
+            placeholder="default"
+            title="Choose an existing namespace or type a new one"
+            autoCapitalize="none"
+            autoCorrect="off"
+            spellCheck={false}
+          />
+          <datalist id="helm-install-namespace-options">
             {(nsList.length ? nsList : ['default']).map((ns) => (
-              <option key={ns} value={ns}>{ns}</option>
+              <option key={ns} value={ns} />
             ))}
-          </select>
+          </datalist>
           <input
             type="text"
             placeholder="Name (optional)"
             value={releaseName}
             onChange={(e) => setReleaseName(e.target.value)}
             className="border border-border rounded px-2 py-1 bg-bg text-text focus:outline-none focus:border-primary min-w-[8rem]"
+            autoCapitalize="none"
+            autoCorrect="off"
+            spellCheck={false}
           />
           <button
             type="button"

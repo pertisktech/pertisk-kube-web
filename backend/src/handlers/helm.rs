@@ -1291,3 +1291,97 @@ pub async fn install_helm_chart(
             .into_response()
     }
 }
+
+// ── Helm Release Resources (helm get manifest) ────────────────────────────────
+
+#[derive(Serialize)]
+pub struct HelmResourceItem {
+    pub api_version: String,
+    pub kind: String,
+    pub name: String,
+    pub namespace: String,
+}
+
+/// GET /helm/releases/:namespace/:name/resources — returns all K8s resources in the release manifest.
+pub async fn get_helm_release_resources(
+    Path((namespace, name)): Path<(String, String)>,
+    State(_state): State<AppState>,
+) -> impl IntoResponse {
+    let namespace = namespace.trim();
+    let name = name.trim();
+    if name.is_empty() {
+        return (
+            StatusCode::BAD_REQUEST,
+            Json(serde_json::json!({ "data": [], "message": "Release name is required" })),
+        )
+            .into_response();
+    }
+    let ns = if namespace.is_empty() { "default" } else { namespace };
+
+    let output = Command::new("helm")
+        .args(["get", "manifest", name, "--namespace", ns])
+        .output()
+        .await;
+
+    match output {
+        Ok(o) if o.status.success() => {
+            let manifest = String::from_utf8_lossy(&o.stdout);
+            let mut resources: Vec<HelmResourceItem> = Vec::new();
+
+            // Manifest is multiple YAML docs separated by ---
+            for doc in manifest.split("\n---") {
+                let trimmed = doc.trim_start_matches("---").trim();
+                if trimmed.is_empty() {
+                    continue;
+                }
+                if let Ok(v) = serde_yaml::from_str::<serde_json::Value>(trimmed) {
+                    let kind = v["kind"].as_str().unwrap_or("").to_string();
+                    let api_version = v["apiVersion"].as_str().unwrap_or("").to_string();
+                    let res_name = v["metadata"]["name"].as_str().unwrap_or("").to_string();
+                    let res_ns = v["metadata"]["namespace"]
+                        .as_str()
+                        .unwrap_or(ns)
+                        .to_string();
+                    if !kind.is_empty() && !res_name.is_empty() {
+                        resources.push(HelmResourceItem {
+                            api_version,
+                            kind,
+                            name: res_name,
+                            namespace: res_ns,
+                        });
+                    }
+                }
+            }
+
+            let total = resources.len();
+            (
+                StatusCode::OK,
+                Json(serde_json::json!({ "data": resources, "total": total })),
+            )
+                .into_response()
+        }
+        Ok(o) => {
+            let stderr = String::from_utf8_lossy(&o.stderr);
+            error!("helm get manifest failed: {}", stderr);
+            (
+                StatusCode::BAD_REQUEST,
+                Json(serde_json::json!({
+                    "data": [],
+                    "message": stderr.to_string()
+                })),
+            )
+                .into_response()
+        }
+        Err(e) => {
+            error!("helm get manifest error: {}", e);
+            (
+                StatusCode::SERVICE_UNAVAILABLE,
+                Json(serde_json::json!({
+                    "data": [],
+                    "message": format!("Helm not available: {}", e)
+                })),
+            )
+                .into_response()
+        }
+    }
+}
