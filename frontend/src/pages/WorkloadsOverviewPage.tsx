@@ -1,3 +1,4 @@
+import { memo, useMemo } from 'react';
 import { Link } from 'react-router-dom';
 import {
   PieChart,
@@ -200,7 +201,29 @@ interface ChartCardProps {
   isLoading: boolean;
 }
 
-function ChartCard({ title, icon: Icon, data, total, linkTo, isLoading }: ChartCardProps) {
+function chartDataEqual(
+  left: { name: string; value: number; color: string }[],
+  right: { name: string; value: number; color: string }[]
+) {
+  if (left.length !== right.length) return false;
+
+  for (let index = 0; index < left.length; index += 1) {
+    const leftItem = left[index];
+    const rightItem = right[index];
+
+    if (
+      leftItem.name !== rightItem.name ||
+      leftItem.value !== rightItem.value ||
+      leftItem.color !== rightItem.color
+    ) {
+      return false;
+    }
+  }
+
+  return true;
+}
+
+const ChartCard = memo(function ChartCard({ title, icon: Icon, data, total, linkTo, isLoading }: ChartCardProps) {
   const hasData = data.length > 0 && total > 0;
 
   return (
@@ -294,7 +317,16 @@ function ChartCard({ title, icon: Icon, data, total, linkTo, isLoading }: ChartC
       )}
     </div>
   );
-}
+}, (previousProps, nextProps) => {
+  return (
+    previousProps.title === nextProps.title &&
+    previousProps.icon === nextProps.icon &&
+    previousProps.total === nextProps.total &&
+    previousProps.linkTo === nextProps.linkTo &&
+    previousProps.isLoading === nextProps.isLoading &&
+    chartDataEqual(previousProps.data, nextProps.data)
+  );
+});
 
 interface SummaryRowProps {
   name: string;
@@ -306,7 +338,7 @@ interface SummaryRowProps {
   linkTo: string;
 }
 
-function SummaryRow({
+const SummaryRow = memo(function SummaryRow({
   name,
   icon: Icon,
   total,
@@ -375,7 +407,7 @@ function SummaryRow({
       </td>
     </tr>
   );
-}
+});
 
 export const WorkloadsOverviewPage = () => {
   const { selectedNamespaces } = useNamespace();
@@ -405,13 +437,51 @@ export const WorkloadsOverviewPage = () => {
     return list.filter((x) => selectedNamespaces.includes(x.namespace ?? ''));
   };
 
-  const filteredPods = filterByNs(pods ?? []);
-  const filteredDeployments = filterByNs(deployments ?? []);
-  const filteredStatefulSets = filterByNs(statefulsets ?? []);
-  const filteredDaemonSets = filterByNs(daemonsets ?? []);
-  const filteredReplicaSets = filterByNs(replicasets ?? []);
-  const filteredJobs = filterByNs(jobs ?? []);
-  const filteredCronJobs = filterByNs(cronjobs ?? []);
+  const filteredPods = useMemo(() => filterByNs(pods ?? []), [pods, selectedNamespaces]);
+  const filteredDeployments = useMemo(
+    () => filterByNs(deployments ?? []),
+    [deployments, selectedNamespaces]
+  );
+  const filteredStatefulSets = useMemo(
+    () => filterByNs(statefulsets ?? []),
+    [statefulsets, selectedNamespaces]
+  );
+  const filteredDaemonSets = useMemo(
+    () => filterByNs(daemonsets ?? []),
+    [daemonsets, selectedNamespaces]
+  );
+  const filteredReplicaSets = useMemo(
+    () => filterByNs(replicasets ?? []),
+    [replicasets, selectedNamespaces]
+  );
+  const filteredJobs = useMemo(() => filterByNs(jobs ?? []), [jobs, selectedNamespaces]);
+  const filteredCronJobs = useMemo(
+    () => filterByNs(cronjobs ?? []),
+    [cronjobs, selectedNamespaces]
+  );
+
+  const podChartData = useMemo(() => getPodStatusData(filteredPods), [filteredPods]);
+  const deploymentChartData = useMemo(
+    () => getDeploymentStatusData(filteredDeployments),
+    [filteredDeployments]
+  );
+  const daemonSetChartData = useMemo(
+    () => getDaemonSetStatusData(filteredDaemonSets),
+    [filteredDaemonSets]
+  );
+  const statefulSetChartData = useMemo(
+    () => getStatefulSetStatusData(filteredStatefulSets),
+    [filteredStatefulSets]
+  );
+  const replicaSetChartData = useMemo(
+    () => getReplicaSetStatusData(filteredReplicaSets),
+    [filteredReplicaSets]
+  );
+  const jobChartData = useMemo(() => getJobStatusData(filteredJobs), [filteredJobs]);
+  const cronJobChartData = useMemo(
+    () => getCronJobStatusData(filteredCronJobs),
+    [filteredCronJobs]
+  );
 
   const totalWorkloads =
     filteredPods.length +
@@ -482,7 +552,7 @@ export const WorkloadsOverviewPage = () => {
         <ChartCard
           title="Pods"
           icon={Box}
-          data={getPodStatusData(filteredPods)}
+          data={podChartData}
           total={filteredPods.length}
           linkTo="/pods"
           isLoading={podsLoading}
@@ -490,7 +560,7 @@ export const WorkloadsOverviewPage = () => {
         <ChartCard
           title="Deployments"
           icon={Layers}
-          data={getDeploymentStatusData(filteredDeployments)}
+          data={deploymentChartData}
           total={filteredDeployments.length}
           linkTo="/deployments"
           isLoading={deploymentsLoading}
@@ -498,7 +568,7 @@ export const WorkloadsOverviewPage = () => {
         <ChartCard
           title="DaemonSets"
           icon={Layers}
-          data={getDaemonSetStatusData(filteredDaemonSets)}
+          data={daemonSetChartData}
           total={filteredDaemonSets.length}
           linkTo="/daemonsets"
           isLoading={daemonsetsLoading}
@@ -506,7 +576,7 @@ export const WorkloadsOverviewPage = () => {
         <ChartCard
           title="StatefulSets"
           icon={Database}
-          data={getStatefulSetStatusData(filteredStatefulSets)}
+          data={statefulSetChartData}
           total={filteredStatefulSets.length}
           linkTo="/statefulsets"
           isLoading={statefulsetsLoading}
@@ -514,7 +584,7 @@ export const WorkloadsOverviewPage = () => {
         <ChartCard
           title="ReplicaSets"
           icon={Copy}
-          data={getReplicaSetStatusData(filteredReplicaSets)}
+          data={replicaSetChartData}
           total={filteredReplicaSets.length}
           linkTo="/replicasets"
           isLoading={replicasetsLoading}
@@ -522,7 +592,7 @@ export const WorkloadsOverviewPage = () => {
         <ChartCard
           title="Jobs"
           icon={Briefcase}
-          data={getJobStatusData(filteredJobs)}
+          data={jobChartData}
           total={filteredJobs.length}
           linkTo="/jobs"
           isLoading={jobsLoading}
@@ -530,7 +600,7 @@ export const WorkloadsOverviewPage = () => {
         <ChartCard
           title="CronJobs"
           icon={Clock}
-          data={getCronJobStatusData(filteredCronJobs)}
+          data={cronJobChartData}
           total={filteredCronJobs.length}
           linkTo="/cronjobs"
           isLoading={cronjobsLoading}
