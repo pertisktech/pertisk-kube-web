@@ -56,6 +56,33 @@ const buildExecWebSocketUrl = (namespace: string, podName: string, containerName
   }
 };
 
+function buildXtermTheme(isDark: boolean | undefined) {
+  const computedStyle = getComputedStyle(document.documentElement);
+  const surfaceElevated = computedStyle.getPropertyValue('--color-surface-elevated').trim() || (isDark ? '#15161e' : '#f5f5f5');
+  const textColor = computedStyle.getPropertyValue('--color-text').trim() || (isDark ? '#e8e8e9' : '#1a1a1a');
+  return {
+    background: surfaceElevated,
+    foreground: textColor,
+    cursor: textColor,
+    black: '#000000',
+    red: '#cd3131',
+    green: isDark ? '#0dbc79' : '#00bc00',
+    yellow: isDark ? '#e5e510' : '#949800',
+    blue: isDark ? '#2472c8' : '#0451a5',
+    magenta: isDark ? '#bc3fbc' : '#bc05bc',
+    cyan: isDark ? '#11a8cd' : '#0598bc',
+    white: isDark ? '#e5e5e5' : '#555555',
+    brightBlack: '#666666',
+    brightRed: isDark ? '#f14c4c' : '#cd3131',
+    brightGreen: isDark ? '#23d18b' : '#14ce14',
+    brightYellow: isDark ? '#f5f543' : '#b5ba00',
+    brightBlue: isDark ? '#3b8eea' : '#0451a5',
+    brightMagenta: isDark ? '#d670d6' : '#bc05bc',
+    brightCyan: isDark ? '#29b8db' : '#0598bc',
+    brightWhite: isDark ? '#ffffff' : '#a5a5a5',
+  };
+}
+
 export const Terminal = ({ podName, namespace, containerName, initialCommand }: TerminalProps) => {
   const terminalRef = useRef<HTMLDivElement>(null);
   const xtermRef = useRef<XTerm | null>(null);
@@ -111,11 +138,6 @@ export const Terminal = ({ podName, namespace, containerName, initialCommand }: 
   useEffect(() => {
     if (!terminalRef.current) return;
 
-    // Get actual theme colors from CSS variables
-    const computedStyle = getComputedStyle(document.documentElement);
-    const surfaceElevated = computedStyle.getPropertyValue('--color-surface-elevated').trim() || (theme?.isDark ? '#15161e' : '#f5f5f5');
-    const textColor = computedStyle.getPropertyValue('--color-text').trim() || (theme?.isDark ? '#e8e8e9' : '#1a1a1a');
-
     // Create terminal instance
     const xterm = new XTerm({
       cursorBlink: true,
@@ -127,27 +149,7 @@ export const Terminal = ({ podName, namespace, containerName, initialCommand }: 
       rows: 30,
       cols: 120,
       scrollback: 1000,
-      theme: {
-        background: surfaceElevated,
-        foreground: textColor,
-        cursor: textColor,
-        black: '#000000',
-        red: '#cd3131',
-        green: theme?.isDark ? '#0dbc79' : '#00bc00',
-        yellow: theme?.isDark ? '#e5e510' : '#949800',
-        blue: theme?.isDark ? '#2472c8' : '#0451a5',
-        magenta: theme?.isDark ? '#bc3fbc' : '#bc05bc',
-        cyan: theme?.isDark ? '#11a8cd' : '#0598bc',
-        white: theme?.isDark ? '#e5e5e5' : '#555555',
-        brightBlack: '#666666',
-        brightRed: theme?.isDark ? '#f14c4c' : '#cd3131',
-        brightGreen: theme?.isDark ? '#23d18b' : '#14ce14',
-        brightYellow: theme?.isDark ? '#f5f543' : '#b5ba00',
-        brightBlue: theme?.isDark ? '#3b8eea' : '#0451a5',
-        brightMagenta: theme?.isDark ? '#d670d6' : '#bc05bc',
-        brightCyan: theme?.isDark ? '#29b8db' : '#0598bc',
-        brightWhite: theme?.isDark ? '#ffffff' : '#a5a5a5',
-      },
+      theme: buildXtermTheme(theme?.isDark),
     });
 
     // Add addons
@@ -286,7 +288,17 @@ export const Terminal = ({ podName, namespace, containerName, initialCommand }: 
       ws.close();
       xterm.dispose();
     };
-  }, [podName, namespace, containerName, initialCommand, theme?.isDark]);
+  // theme?.isDark is intentionally excluded: theme changes update colors via the
+  // separate effect below without reconnecting the WebSocket.
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [podName, namespace, containerName, initialCommand]);
+
+  // Update terminal colors live when the theme is toggled, without reconnecting.
+  useEffect(() => {
+    if (xtermRef.current) {
+      xtermRef.current.options.theme = buildXtermTheme(theme?.isDark);
+    }
+  }, [theme?.isDark]);
 
   return (
     <div
