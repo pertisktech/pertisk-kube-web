@@ -799,6 +799,7 @@ const TabContent = ({
 const MENU_ITEM_HEIGHT = 48;
 const MIN_PANEL_HEIGHT = 280;
 const DEFAULT_PANEL_HEIGHT = () => Math.round(window.innerHeight * 0.5);
+const LARGE_DEFAULT_PANEL_TYPES = new Set<PanelTabType>(['host-shell', 'pod-exec', 'node-exec', 'yaml-editor']);
 
 export const BottomPanel = () => {
   const [tabs, setTabs] = useState<PanelTab[]>([]);
@@ -855,7 +856,11 @@ export const BottomPanel = () => {
     ]);
     setActiveTabId(id);
     setCollapsed(false);
-    setPanelHeight((h) => (h <= MIN_PANEL_HEIGHT ? DEFAULT_PANEL_HEIGHT() : h));
+    if (LARGE_DEFAULT_PANEL_TYPES.has(type)) {
+      setPanelHeight(DEFAULT_PANEL_HEIGHT());
+    } else {
+      setPanelHeight((h) => (h <= MIN_PANEL_HEIGHT ? DEFAULT_PANEL_HEIGHT() : h));
+    }
     setShowAddMenu(false);
   }, []);
 
@@ -936,10 +941,7 @@ export const BottomPanel = () => {
     setYamlActionResult(null);
     try {
       const token = getAuthToken();
-      const isHelmUpgrade =
-        activeTab.yamlActionLabel === 'Upgrade' &&
-        !!activeTab.helmReleaseName &&
-        !!activeTab.helmReleaseNamespace;
+      const isHelmUpgrade = !!activeTab.helmReleaseName && !!activeTab.helmReleaseNamespace;
 
       const endpoint = isHelmUpgrade
         ? `/api/helm/releases/${encodeURIComponent(activeTab.helmReleaseNamespace as string)}/${encodeURIComponent(activeTab.helmReleaseName as string)}/upgrade`

@@ -886,6 +886,7 @@ function createRealtimeHook<T>(
       let ws: WebSocket | null = null;
       let reconnectTimeout: ReturnType<typeof setTimeout>;
       let emptyListTimeout: ReturnType<typeof setTimeout> | null = null;
+      let heartbeatInterval: ReturnType<typeof setInterval> | null = null;
       let messageQueue: WebSocketMessage[] = [];
 
       const connect = () => {
@@ -916,6 +917,13 @@ function createRealtimeHook<T>(
                 ws!.send(JSON.stringify(msg));
               }
             }
+
+            // Keep the socket active through idle LBs/proxies.
+            heartbeatInterval = setInterval(() => {
+              if (ws?.readyState === WebSocket.OPEN) {
+                ws.send(JSON.stringify({ type: 'ping' }));
+              }
+            }, 25000);
             // Keep loading true until first data or "subscribed" + timeout (avoid "No ... found" on refresh)
           };
 
@@ -983,6 +991,10 @@ function createRealtimeHook<T>(
 
           ws.onclose = () => {
             if (isRealtimeDebug()) console.log(`WebSocket disconnected for ${displayName}`);
+            if (heartbeatInterval) {
+              clearInterval(heartbeatInterval);
+              heartbeatInterval = null;
+            }
 
             // Attempt to reconnect after 3 seconds
             reconnectTimeout = setTimeout(() => {
@@ -1007,6 +1019,9 @@ function createRealtimeHook<T>(
         }
         if (emptyListTimeout) {
           clearTimeout(emptyListTimeout);
+        }
+        if (heartbeatInterval) {
+          clearInterval(heartbeatInterval);
         }
         if (ws) {
           ws.close();
@@ -1247,6 +1262,7 @@ export function useRealtimeCustomResources(crdName: string | null): {
     }
     let ws: WebSocket | null = null;
     let reconnectTimeout: ReturnType<typeof setTimeout>;
+    let heartbeatInterval: ReturnType<typeof setInterval> | null = null;
     const connect = () => {
       try {
         const protocol = window.location.protocol === 'https:' ? 'wss' : 'ws';
@@ -1256,6 +1272,11 @@ export function useRealtimeCustomResources(crdName: string | null): {
         ws.onopen = () => {
           setError(null);
           ws!.send(JSON.stringify({ type: 'subscribe', resource: resourceType }));
+          heartbeatInterval = setInterval(() => {
+            if (ws?.readyState === WebSocket.OPEN) {
+              ws.send(JSON.stringify({ type: 'ping' }));
+            }
+          }, 25000);
           setIsLoading(false);
         };
         ws.onmessage = (event) => {
@@ -1287,6 +1308,10 @@ export function useRealtimeCustomResources(crdName: string | null): {
         };
         ws.onerror = () => setError('Connection error');
         ws.onclose = () => {
+          if (heartbeatInterval) {
+            clearInterval(heartbeatInterval);
+            heartbeatInterval = null;
+          }
           reconnectTimeout = setTimeout(connect, 3000);
         };
       } catch (err) {
@@ -1297,6 +1322,9 @@ export function useRealtimeCustomResources(crdName: string | null): {
     connect();
     return () => {
       clearTimeout(reconnectTimeout);
+      if (heartbeatInterval) {
+        clearInterval(heartbeatInterval);
+      }
       ws?.close();
     };
   }, [crdName, resourceType]);

@@ -212,7 +212,7 @@ export const HelmReleasesPage = () => {
         type: 'yaml-editor',
         yamlContent: valuesYaml,
         title: `${release.name} values`,
-        yamlActionLabel: 'Upgrade',
+        yamlActionLabel: 'Apply',
         helmReleaseName: release.name,
         helmReleaseNamespace: release.namespace,
       });
@@ -221,7 +221,7 @@ export const HelmReleasesPage = () => {
         type: 'yaml-editor',
         yamlContent: '# Failed to load Helm values\n',
         title: `${release.name} values`,
-        yamlActionLabel: 'Upgrade',
+        yamlActionLabel: 'Apply',
         helmReleaseName: release.name,
         helmReleaseNamespace: release.namespace,
       });
