@@ -59,42 +59,55 @@ export const BackupListPage = () => {
     }
   };
 
-  const handleConfirmDelete = async () => {
+  const handleConfirmDelete = () => {
     if (!confirmDelete) return;
 
+    const request = { ...confirmDelete };
+    setConfirmDelete(null);
     setIsDeleting(true);
+    setDeletingName(request.keys[0] || null);
 
-    try {
-      setDeletingName(confirmDelete.keys[0] || null);
-      const result = await deleteBackupRunsBulk(confirmDelete.keys);
-      queryClient.setQueryData(['backup-overview'], (current: BackupOverview | undefined) => {
-        if (!current) return current;
-        return {
-          ...current,
-          backups: current.backups.filter((backup) => !confirmDelete.keys.includes(backup.name)),
-        };
-      });
-      await queryClient.invalidateQueries({ queryKey: ['backup-overview'] });
+    // Close immediately and optimistically remove rows so users can continue
+    // using the page while S3 cleanup runs in the background.
+    queryClient.setQueryData(['backup-overview'], (current: BackupOverview | undefined) => {
+      if (!current) return current;
+      return {
+        ...current,
+        backups: current.backups.filter((backup) => !request.keys.includes(backup.name)),
+      };
+    });
 
-      if (selectedBackup && confirmDelete.keys.includes(selectedBackup.name)) {
-        setPanelOpen(false);
-        setSelectedBackup(null);
-      }
-
-      setSelectedRows((previous) => previous.filter((name) => !confirmDelete.keys.includes(name)));
-      toast.success(result.message ||
-        (confirmDelete.keys.length === 1
-          ? `Deleted backup ${confirmDelete.keys[0]}`
-          : `Deleted ${confirmDelete.keys.length} backups`)
-      );
-      setConfirmDelete(null);
-    } catch (err) {
-      toast.error(err instanceof Error ? err.message : 'Failed to delete backups');
-    } finally {
-      await queryClient.invalidateQueries({ queryKey: ['backup-overview'] });
-      setDeletingName(null);
-      setIsDeleting(false);
+    if (selectedBackup && request.keys.includes(selectedBackup.name)) {
+      setPanelOpen(false);
+      setSelectedBackup(null);
     }
+
+    setSelectedRows((previous) => previous.filter((name) => !request.keys.includes(name)));
+
+    const loadingToastId = toast.loading(
+      request.keys.length === 1
+        ? `Deleting backup ${request.keys[0]} in background...`
+        : `Deleting ${request.keys.length} backups in background...`
+    );
+
+    void (async () => {
+      try {
+        const result = await deleteBackupRunsBulk(request.keys);
+        toast.success(
+          result.message ||
+            (request.keys.length === 1
+              ? `Deleted backup ${request.keys[0]}`
+              : `Deleted ${request.keys.length} backups`),
+          { id: loadingToastId }
+        );
+      } catch (err) {
+        toast.error(err instanceof Error ? err.message : 'Failed to delete backups', { id: loadingToastId });
+      } finally {
+        await queryClient.invalidateQueries({ queryKey: ['backup-overview'] });
+        setDeletingName(null);
+        setIsDeleting(false);
+      }
+    })();
   };
 
   const handleDownload = async (backupName: string) => {

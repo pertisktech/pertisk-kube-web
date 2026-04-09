@@ -6,6 +6,21 @@ use kube::{
     Api, Client,
 };
 use std::collections::HashMap;
+use std::sync::atomic::{AtomicI8, Ordering};
+use tracing::warn;
+
+// 0 = unknown, 1 = available, -1 = unavailable
+static METRICS_API_STATE: AtomicI8 = AtomicI8::new(0);
+
+fn metrics_api_unavailable_error(err: &kube::Error) -> bool {
+    match err {
+        kube::Error::Api(resp) => resp.code == 404,
+        _ => {
+            let text = err.to_string().to_ascii_lowercase();
+            text.contains("404") || text.contains("page not found")
+        }
+    }
+}
 
 #[derive(Clone, Copy, Debug)]
 pub struct NodeDiskMetrics {
@@ -119,13 +134,28 @@ pub fn format_binary_bytes(bytes: f64) -> String {
 pub async fn fetch_pod_metrics(client: Client) -> HashMap<(String, String), (String, String)> {
     let mut metrics_map: HashMap<(String, String), (String, String)> = HashMap::new();
 
+    if METRICS_API_STATE.load(Ordering::Relaxed) == -1 {
+        return metrics_map;
+    }
+
     let pod_metrics_resource =
         ApiResource::from_gvk(&GroupVersionKind::gvk("metrics.k8s.io", "v1beta1", "PodMetrics"));
     let metrics_api: Api<DynamicObject> = Api::all_with(client, &pod_metrics_resource);
 
     let metrics_list = match metrics_api.list(&ListParams::default()).await {
-        Ok(list) => list,
-        Err(_) => return metrics_map,
+        Ok(list) => {
+            METRICS_API_STATE.store(1, Ordering::Relaxed);
+            list
+        }
+        Err(err) => {
+            if metrics_api_unavailable_error(&err) {
+                let prev = METRICS_API_STATE.swap(-1, Ordering::Relaxed);
+                if prev != -1 {
+                    warn!("metrics.k8s.io API unavailable ({}); disabling metrics probes", err);
+                }
+            }
+            return metrics_map;
+        }
     };
 
     for metric in metrics_list.items {
@@ -193,13 +223,28 @@ pub async fn fetch_pod_metrics(client: Client) -> HashMap<(String, String), (Str
 pub async fn fetch_node_metrics(client: Client) -> HashMap<String, (String, String)> {
     let mut metrics_map: HashMap<String, (String, String)> = HashMap::new();
 
+    if METRICS_API_STATE.load(Ordering::Relaxed) == -1 {
+        return metrics_map;
+    }
+
     let node_metrics_resource =
         ApiResource::from_gvk(&GroupVersionKind::gvk("metrics.k8s.io", "v1beta1", "NodeMetrics"));
     let metrics_api: Api<DynamicObject> = Api::all_with(client, &node_metrics_resource);
 
     let metrics_list = match metrics_api.list(&ListParams::default()).await {
-        Ok(list) => list,
-        Err(_) => return metrics_map,
+        Ok(list) => {
+            METRICS_API_STATE.store(1, Ordering::Relaxed);
+            list
+        }
+        Err(err) => {
+            if metrics_api_unavailable_error(&err) {
+                let prev = METRICS_API_STATE.swap(-1, Ordering::Relaxed);
+                if prev != -1 {
+                    warn!("metrics.k8s.io API unavailable ({}); disabling metrics probes", err);
+                }
+            }
+            return metrics_map;
+        }
     };
 
     for metric in metrics_list.items {

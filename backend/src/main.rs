@@ -56,7 +56,8 @@ pub struct AppState {
 
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
-    let env_filter = EnvFilter::try_from_default_env().unwrap_or_else(|_| EnvFilter::new("info"));
+    let env_filter = EnvFilter::try_from_default_env()
+        .unwrap_or_else(|_| EnvFilter::new("info,kube_client::client=error"));
     tracing_subscriber::fmt()
         .json()
         .with_current_span(true)
