@@ -1,7 +1,7 @@
 import { useEffect, useState, useRef, useCallback } from 'react';
 import { getAuthToken } from '../utils/auth';
-
-export type ResourceType = 'pods' | 'deployments' | 'services' | 'nodes';
+import { getKubeWatchClient } from '../utils/grpcClient';
+import { ResourceType, WatchAction } from '../gen/kubernetes_pb.js';
 
 /** Show WebSocket debug logs in Vite dev or when running on localhost (e.g. local run with built app). */
 const isRealtimeDebug = (): boolean =>
@@ -326,12 +326,12 @@ export const useRealtimePods = <T>(options: UseRealtimePodsOptions = {}) => {
   const [data, setData] = useState<T[]>([]);
   const [isConnected, setIsConnected] = useState(false);
   const [error, setError] = useState<string | null>(null);
-  const wsRef = useRef<WebSocket | null>(null);
+  const abortControllerRef = useRef<AbortController | null>(null);
   const reconnectTimeoutRef = useRef<number>();
   const reconnectAttemptsRef = useRef(0);
   const maxReconnectAttempts = 10;
-  const deletionTimeoutsRef = useRef<Map<string, number>>(new Map()); // Track deletion timeouts
-  const deletedPodsRef = useRef<Set<string>>(new Set()); // Track deleted pods to prevent re-adding
+  const deletionTimeoutsRef = useRef<Map<string, number>>(new Map());
+  const deletedPodsRef = useRef<Set<string>>(new Set());
 
   const syncPodDetails = useCallback(async () => {
     const token = getAuthToken();
@@ -389,48 +389,37 @@ export const useRealtimePods = <T>(options: UseRealtimePodsOptions = {}) => {
     }
   }, []);
 
-  const connect = useCallback(() => {
+  const connect = useCallback(async () => {
     if (!enabled) return;
 
-    const protocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
-    const host = window.location.hostname;
-    const port = window.location.port ? `:${window.location.port}` : '';
-    const wsUrl = `${protocol}//${host}${port}/ws`;
+    if (reconnectTimeoutRef.current) {
+      clearTimeout(reconnectTimeoutRef.current);
+    }
+
+    const abortController = new AbortController();
+    abortControllerRef.current = abortController;
 
     try {
-      const ws = new WebSocket(wsUrl);
+      const client = getKubeWatchClient();
+      if (isRealtimeDebug()) console.log('[useRealtimePods] gRPC stream connecting');
+      setError(null);
+      setIsConnected(true);
+      reconnectAttemptsRef.current = 0;
 
-      ws.onopen = () => {
-        if (isRealtimeDebug()) console.log('[useRealtimePods] WebSocket connected');
-        setIsConnected(true);
-        setError(null);
-        reconnectAttemptsRef.current = 0;
+      const stream = client.watchMany(
+        { subscriptions: [{ resourceType: ResourceType.PODS }] },
+        { signal: abortController.signal }
+      );
 
-        // Subscribe to pods
-        ws.send(JSON.stringify({
-          type: 'subscribe',
-          resource: 'pods'
-        }));
-      };
+      for await (const response of stream) {
+        if (response.message.case === 'resourceUpdate') {
+          const update = response.message.value;
+          const rawPodData = JSON.parse(new TextDecoder().decode(update.data));
+          const transformedPod = transformPod(rawPodData);
+          const actionEnum = update.action;
 
-      ws.onmessage = (event) => {
-        try {
-          const message = JSON.parse(event.data);
-
-          if (message.type === 'resource_update' && message.resource === 'pods') {
-            const { action, data: rawPodData } = message;
-            const transformedPod = transformPod(rawPodData);
-            
-            // Debug log for status changes (dev only)
-            if (isRealtimeDebug() && (transformedPod.status === 'NotReady' ||
-                transformedPod.status === 'ContainerStarting' ||
-                transformedPod.status === 'Terminating')) {
-              console.log(`[useRealtimePods] ${action} pod: ${transformedPod.namespace}/${transformedPod.name} - Status: ${transformedPod.status}, Ready: ${transformedPod.ready}`);
-            }
-
-            setData((prevData) => {
-              switch (action) {
-                case 'ADDED':
+          setData((prevData) => {
+            if (actionEnum === WatchAction.ADDED) {
                   const podKey = `${transformedPod.namespace}/${transformedPod.name}`;
                   
                   // Don't add if pod was deleted
@@ -471,8 +460,8 @@ export const useRealtimePods = <T>(options: UseRealtimePodsOptions = {}) => {
                     });
                   }
                   return [...prevData, transformedPod as T];
-                
-                case 'MODIFIED':
+            } else if (actionEnum === WatchAction.MODIFIED) {
+                  // MODIFIED
                   const modPodKey = `${transformedPod.namespace}/${transformedPod.name}`;
                   
                   // Don't modify if pod was deleted
@@ -538,8 +527,8 @@ export const useRealtimePods = <T>(options: UseRealtimePodsOptions = {}) => {
                     
                     return newList;
                   }
-                
-                case 'DELETED':
+            } else if (actionEnum === WatchAction.DELETED) {
+                  // DELETED
                   const podKeyForDeletion = `${transformedPod.namespace}/${transformedPod.name}`;
                   if (isRealtimeDebug()) console.log(`[useRealtimePods] Deleting pod immediately: ${podKeyForDeletion}`);
                   
@@ -569,60 +558,51 @@ export const useRealtimePods = <T>(options: UseRealtimePodsOptions = {}) => {
                   }, 500);
                   
                   return finalFiltered;
-                
-                default:
-                  return prevData;
-              }
-            });
-          } else if (message.type === 'subscribed') {
-            if (isRealtimeDebug()) console.log('[useRealtimePods] Subscription confirmed');
-          } else if (message.type === 'error') {
-            console.error('[useRealtimePods] Server error:', message.message);
-            setError(message.message);
-          }
-        } catch (err) {
-          console.error('[useRealtimePods] Failed to parse message:', err);
+            } else {
+              return prevData;
+            }
+          });
+        } else if (response.message.case === 'error') {
+          console.error('[useRealtimePods] gRPC error:', response.message.value.message);
+          setError(response.message.value.message);
         }
-      };
-
-      ws.onerror = (errorEvent) => {
-        console.error('[useRealtimePods] WebSocket error:', errorEvent);
-        setError('WebSocket connection error');
-      };
-
-      ws.onclose = () => {
-        if (isRealtimeDebug()) console.log('[useRealtimePods] WebSocket closed');
+      }
+    } catch (err: unknown) {
+      const isAbort = err instanceof Error && (err.name === 'AbortError' || err.message.includes('aborted'));
+      if (isAbort) {
+        if (isRealtimeDebug()) console.log('[useRealtimePods] gRPC stream aborted (normal disconnect)');
         setIsConnected(false);
-        wsRef.current = null;
+        return;
+      }
+      console.error('[useRealtimePods] gRPC stream error:', err);
+      setIsConnected(false);
 
-        // Attempt reconnection
-        if (
-          enabled &&
-          reconnectAttemptsRef.current < maxReconnectAttempts
-        ) {
-          reconnectAttemptsRef.current += 1;
-          if (isRealtimeDebug()) console.log(
-            `[useRealtimePods] Reconnecting... (attempt ${reconnectAttemptsRef.current}/${maxReconnectAttempts})`
-          );
-          reconnectTimeoutRef.current = setTimeout(() => {
-            connect();
-          }, reconnectInterval);
-        } else if (reconnectAttemptsRef.current >= maxReconnectAttempts) {
-          setError('Max reconnection attempts reached');
-        }
-      };
+      if (enabled && reconnectAttemptsRef.current < maxReconnectAttempts) {
+        reconnectAttemptsRef.current += 1;
+        if (isRealtimeDebug()) console.log(
+          `[useRealtimePods] Reconnecting... (attempt ${reconnectAttemptsRef.current}/${maxReconnectAttempts})`
+        );
+        reconnectTimeoutRef.current = setTimeout(() => {
+          connect();
+        }, reconnectInterval);
+      } else if (reconnectAttemptsRef.current >= maxReconnectAttempts) {
+        setError('Max reconnection attempts reached');
+      }
+      return;
+    }
 
-      wsRef.current = ws;
-    } catch (err) {
-      console.error('[useRealtimePods] Failed to create WebSocket:', err);
-      setError('Failed to create WebSocket connection');
+    // Stream ended (server closed)
+    setIsConnected(false);
+    if (enabled && reconnectAttemptsRef.current < maxReconnectAttempts) {
+      reconnectAttemptsRef.current += 1;
+      reconnectTimeoutRef.current = setTimeout(() => connect(), reconnectInterval);
     }
   }, [enabled, reconnectInterval]);
 
   const disconnect = useCallback(() => {
-    if (wsRef.current) {
-      wsRef.current.close();
-      wsRef.current = null;
+    if (abortControllerRef.current) {
+      abortControllerRef.current.abort();
+      abortControllerRef.current = null;
     }
     if (reconnectTimeoutRef.current) {
       clearTimeout(reconnectTimeoutRef.current);

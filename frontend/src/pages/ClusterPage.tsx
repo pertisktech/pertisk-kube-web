@@ -560,7 +560,7 @@ export const ClusterPage = () => {
                             padding: '10px 12px',
                             border: '1px solid var(--color-border)',
                           }}
-                          formatter={(value: number | undefined, name: string | undefined) => [`${formatCpu(Number(value ?? 0))} cores`, name ?? '']}
+                          formatter={(value, name) => [`${formatCpu(Number(value ?? 0))} cores`, String(name ?? '')]}
                           labelFormatter={() => 'CPU'}
                         />
                       </PieChart>
@@ -648,7 +648,7 @@ export const ClusterPage = () => {
                             padding: '10px 12px',
                             border: '1px solid var(--color-border)',
                           }}
-                          formatter={(value: number | undefined, name: string | undefined) => [formatMemoryGb(Number(value ?? 0)), name ?? '']}
+                          formatter={(value, name) => [formatMemoryGb(Number(value ?? 0)), String(name ?? '')]}
                           labelFormatter={() => 'Memory'}
                         />
                       </PieChart>
@@ -698,7 +698,7 @@ export const ClusterPage = () => {
                             padding: '10px 12px',
                             border: '1px solid var(--color-border)',
                           }}
-                          formatter={(value: number | undefined, name: string | undefined) => [`${Math.round(Number(value ?? 0))} pods`, name ?? '']}
+                          formatter={(value, name) => [`${Math.round(Number(value ?? 0))} pods`, String(name ?? '')]}
                           labelFormatter={() => `Capacity: ${roleTabCapacitySummary.totalPodsAllocatable} pods`}
                         />
                       </PieChart>

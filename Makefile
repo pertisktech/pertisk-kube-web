@@ -62,7 +62,7 @@ build-backend:
 
 # Build frontend and run backend serving the built SPA on a single port.
 run-monolith: frontend-build
-	APP_PORT=$(APP_PORT) GRPC_PORT=$(GRPC_PORT) STATIC_DIR=frontend/dist cargo run -p pertisk-kube-backend
+	APP_PORT=$(APP_PORT) GRPC_PORT=$(GRPC_PORT) GRPC_URL=http://localhost:$(GRPC_PORT) STATIC_DIR=frontend/dist cargo run -p pertisk-kube-backend
 
 # Simulate running as an ingress-style controller talking to k8s via kubeconfig.
 run-ingress-k8s: tools frontend-build
@@ -78,7 +78,7 @@ run-ingress-k8s: tools frontend-build
 	if [ -f "$(K8S_KUBECONFIG)" ]; then \
 		echo "Using local k8s kubeconfig: $(K8S_KUBECONFIG)"; \
 		KUBECONFIG="$(K8S_KUBECONFIG)" \
-		APP_PORT=$(APP_PORT) GRPC_PORT=$(GRPC_PORT) \
+		APP_PORT=$(APP_PORT) GRPC_PORT=$(GRPC_PORT) GRPC_URL=http://localhost:$(GRPC_PORT) \
 		STATIC_DIR=frontend/dist \
 		cargo watch \
 			-i frontend/dist \
@@ -91,7 +91,7 @@ run-ingress-k8s: tools frontend-build
 			-x 'run -p pertisk-kube-backend'; \
 	else \
 		echo "k8s kubeconfig not found at $(K8S_KUBECONFIG); using current kubeconfig context instead."; \
-		APP_PORT=$(APP_PORT) GRPC_PORT=$(GRPC_PORT) \
+		APP_PORT=$(APP_PORT) GRPC_PORT=$(GRPC_PORT) GRPC_URL=http://localhost:$(GRPC_PORT) \
 		STATIC_DIR=frontend/dist \
 		cargo watch \
 			-i frontend/dist \

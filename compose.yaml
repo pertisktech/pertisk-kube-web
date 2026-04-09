@@ -13,6 +13,8 @@ services:
     environment:
       RUST_LOG: info
       KUBECONFIG: /home/appuser/.kube/config
+      # gRPC-Web URL served to the browser. Use the HOST-side port (mapped from container 50051).
+      GRPC_URL: "http://localhost:50052"
     volumes:
       - ${HOME}/.kube/config:/home/appuser/.kube/config:ro
       - ${HOME}/.aws:/home/appuser/.aws:ro

@@ -51,6 +51,10 @@ fn parse_optional_quantity(value: &serde_json::Value) -> Option<f64> {
 }
 
 async fn collect_workload_metric_totals(state: &AppState) -> WorkloadMetricTotals {
+    if !crate::utils::metrics_api_available(&state.client).await {
+        return WorkloadMetricTotals::default();
+    }
+
     let pod_metrics_resource =
         ApiResource::from_gvk(&GroupVersionKind::gvk("metrics.k8s.io", "v1beta1", "PodMetrics"));
     let metrics_api: Api<DynamicObject> = Api::all_with(state.client.clone(), &pod_metrics_resource);

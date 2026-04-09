@@ -101,7 +101,20 @@ ingress:
         - dashboard.talos-hz.thaidevops.co
 
 ingressGrpc:
-  enabled: false
+  enabled: true
+  className: "pertisk-rproxy"
+  annotations:
+    cert-manager.io/cluster-issuer: letsencrypt-prod
+    nginx.ingress.kubernetes.io/backend-protocol: "GRPC"
+  hosts:
+    - host: dashboard.talos-hz.thaidevops.co
+      paths:
+        - path: /kubernetes.KubernetesWatch/
+          pathType: Prefix
+  tls:
+    - secretName: admin-talos-hz-tls
+      hosts:
+        - dashboard.talos-hz.thaidevops.co
 
 # PodDisruptionBudget — keeps at least 1 pod available during node drains / rolling updates
 pdb:
@@ -115,19 +128,6 @@ leaderElection:
   # Optionally pre-create the Lease object used by leader election.
   createLease: true
   leaseDurationSeconds: 30
-  className: nginx
-  annotations:
-    cert-manager.io/cluster-issuer: letsencrypt-prod
-    nginx.ingress.kubernetes.io/backend-protocol: "GRPC"
-  hosts:
-    - host: pertisk-kube.example.com
-      paths:
-        - path: /kubernetes.KubernetesWatch/
-          pathType: Prefix
-  tls:
-    - secretName: pertisk-kube-tls
-      hosts:
-        - pertisk-kube.example.com
 
 # RBAC configuration — aligned with all app features (list/get/watch/update/patch/delete, exec, port-forward, etc.)
 rbac:

@@ -7,6 +7,17 @@ use kube::{
 };
 use std::collections::HashMap;
 
+/// Returns true when the `metrics.k8s.io` API group is available on the cluster.
+/// When metrics-server is not installed the aggregation layer returns a plain-text
+/// "404 page not found" body which the kube client cannot parse as a Status JSON,
+/// producing spurious WARN logs.  Checking discovery first avoids that request.
+pub async fn metrics_api_available(client: &Client) -> bool {
+    match client.list_api_groups().await {
+        Ok(groups) => groups.groups.iter().any(|g| g.name == "metrics.k8s.io"),
+        Err(_) => false,
+    }
+}
+
 #[derive(Clone, Copy, Debug)]
 pub struct NodeDiskMetrics {
     pub used_bytes: f64,
@@ -119,6 +130,10 @@ pub fn format_binary_bytes(bytes: f64) -> String {
 pub async fn fetch_pod_metrics(client: Client) -> HashMap<(String, String), (String, String)> {
     let mut metrics_map: HashMap<(String, String), (String, String)> = HashMap::new();
 
+    if !metrics_api_available(&client).await {
+        return metrics_map;
+    }
+
     let pod_metrics_resource =
         ApiResource::from_gvk(&GroupVersionKind::gvk("metrics.k8s.io", "v1beta1", "PodMetrics"));
     let metrics_api: Api<DynamicObject> = Api::all_with(client, &pod_metrics_resource);
@@ -192,6 +207,10 @@ pub async fn fetch_pod_metrics(client: Client) -> HashMap<(String, String), (Str
 
 pub async fn fetch_node_metrics(client: Client) -> HashMap<String, (String, String)> {
     let mut metrics_map: HashMap<String, (String, String)> = HashMap::new();
+
+    if !metrics_api_available(&client).await {
+        return metrics_map;
+    }
 
     let node_metrics_resource =
         ApiResource::from_gvk(&GroupVersionKind::gvk("metrics.k8s.io", "v1beta1", "NodeMetrics"));

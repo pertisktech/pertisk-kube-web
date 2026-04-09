@@ -40,6 +40,9 @@ COPY Cargo.lock ./Cargo.lock
 COPY backend/Cargo.toml ./backend/Cargo.toml
 COPY backend/build.rs ./backend/build.rs
 
+# Proto definitions — must be present so build.rs regenerates kubernetes.rs correctly.
+COPY proto ./proto
+
 # Replace dummy source with real application code
 COPY backend/src ./backend/src
 

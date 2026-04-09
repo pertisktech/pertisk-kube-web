@@ -1,6 +1,8 @@
 import { useEffect, useState } from 'react';
 import CronExpressionParser from 'cron-parser';
 import { sortNodeRoles } from '../utils/nodeRoles';
+import { getKubeWatchClient } from '../utils/grpcClient';
+import { ResourceType as ProtoResourceType, WatchAction } from '../gen/kubernetes_pb.js';
 import {
   Namespace,
   Deployment,
@@ -39,13 +41,43 @@ import {
   Crd,
 } from '../types';
 
-interface WebSocketMessage {
-  type: string;
-  resource?: string;
-  action?: string;
-  data?: unknown;
-  message?: string;
-}
+/** Map resource string names used in hook factory to proto ResourceType enum values */
+const RESOURCE_TYPE_MAP: Record<string, ProtoResourceType> = {
+  namespaces: ProtoResourceType.NAMESPACES,
+  deployments: ProtoResourceType.DEPLOYMENTS,
+  statefulsets: ProtoResourceType.STATEFULSETS,
+  daemonsets: ProtoResourceType.DAEMONSETS,
+  replicasets: ProtoResourceType.REPLICASETS,
+  jobs: ProtoResourceType.JOBS,
+  cronjobs: ProtoResourceType.CRONJOBS,
+  events: ProtoResourceType.EVENTS,
+  nodes: ProtoResourceType.NODES,
+  services: ProtoResourceType.SERVICES,
+  configmaps: ProtoResourceType.CONFIGMAPS,
+  secrets: ProtoResourceType.SECRETS,
+  resourcequotas: ProtoResourceType.RESOURCE_QUOTAS,
+  limitranges: ProtoResourceType.LIMIT_RANGES,
+  hpa: ProtoResourceType.HPA,
+  pdb: ProtoResourceType.PDB,
+  ingresses: ProtoResourceType.INGRESSES,
+  ingressclasses: ProtoResourceType.INGRESS_CLASSES,
+  endpoints: ProtoResourceType.ENDPOINTS,
+  networkpolicies: ProtoResourceType.NETWORK_POLICIES,
+  persistentvolumes: ProtoResourceType.PERSISTENT_VOLUMES,
+  persistentvolumeclaims: ProtoResourceType.PERSISTENT_VOLUME_CLAIMS,
+  storageclasses: ProtoResourceType.STORAGE_CLASSES,
+  serviceaccounts: ProtoResourceType.SERVICE_ACCOUNTS,
+  clusterroles: ProtoResourceType.CLUSTER_ROLES,
+  clusterrolebindings: ProtoResourceType.CLUSTER_ROLE_BINDINGS,
+  roles: ProtoResourceType.ROLES,
+  rolebindings: ProtoResourceType.ROLE_BINDINGS,
+  priorityclasses: ProtoResourceType.PRIORITY_CLASSES,
+  runtimeclasses: ProtoResourceType.RUNTIME_CLASSES,
+  leases: ProtoResourceType.LEASES,
+  mwc: ProtoResourceType.MUTATING_WEBHOOK_CONFIGURATIONS,
+  vwc: ProtoResourceType.VALIDATING_WEBHOOK_CONFIGURATIONS,
+  crds: ProtoResourceType.CUSTOM_RESOURCE_DEFINITIONS,
+};
 
 /** Show WebSocket debug logs in Vite dev or when running on localhost (e.g. local run with built app). */
 const isRealtimeDebug = (): boolean =>
@@ -883,134 +915,83 @@ function createRealtimeHook<T>(
     const [emptyListConfirmed, setEmptyListConfirmed] = useState(false);
 
     useEffect(() => {
-      let ws: WebSocket | null = null;
-      let reconnectTimeout: ReturnType<typeof setTimeout>;
+      const protoType = RESOURCE_TYPE_MAP[resourceType];
+      if (protoType === undefined) {
+        setError(`Unknown resource type: ${resourceType}`);
+        setIsLoading(false);
+        return;
+      }
+
+      const abortController = new AbortController();
       let emptyListTimeout: ReturnType<typeof setTimeout> | null = null;
-      let messageQueue: WebSocketMessage[] = [];
 
-      const connect = () => {
+      const startStream = async () => {
         try {
-          // WebSocket URL construction
-          const protocol = window.location.protocol === 'https:' ? 'wss' : 'ws';
-          const host = window.location.host;
-          const wsUrl = `${protocol}://${host}/ws`;
+          const client = getKubeWatchClient();
+          if (isRealtimeDebug()) console.log(`gRPC stream connecting for ${displayName}`);
+          setError(null);
 
-          ws = new WebSocket(wsUrl);
+          const stream = client.watchMany(
+            { subscriptions: [{ resourceType: protoType }] },
+            { signal: abortController.signal }
+          );
 
-          ws.onopen = () => {
-            if (isRealtimeDebug()) console.log(`WebSocket connected for ${displayName}`);
-            setError(null);
+          // Start empty-list timer: if no event arrives within 2s assume list is empty
+          emptyListTimeout = setTimeout(() => {
+            emptyListTimeout = null;
+            setHasFetched(true);
+            setIsLoading(false);
+            setEmptyListConfirmed(true);
+          }, 2000);
 
-            // Subscribe to resource
-            ws!.send(
-              JSON.stringify({
-                type: 'subscribe',
-                resource: resourceType,
-              })
-            );
+          for await (const response of stream) {
+            if (response.message.case === 'resourceUpdate') {
+              const update = response.message.value;
+              if (update.resourceType !== protoType) continue;
 
-            // Flush queued messages if any
-            while (messageQueue.length > 0) {
-              const msg = messageQueue.shift();
-              if (msg) {
-                ws!.send(JSON.stringify(msg));
+              // Cancel empty-list timer on first event
+              if (emptyListTimeout) {
+                clearTimeout(emptyListTimeout);
+                emptyListTimeout = null;
               }
-            }
-            // Keep loading true until first data or "subscribed" + timeout (avoid "No ... found" on refresh)
-          };
+              setHasFetched(true);
+              setIsLoading(false);
 
-          ws.onmessage = (event) => {
-            try {
-              const message: WebSocketMessage = JSON.parse(event.data);
+              const rawItem = JSON.parse(new TextDecoder().decode(update.data));
+              const item = transformFn(rawItem);
+              const itemKey = getKey(item);
 
-              if (message.type === 'resource_update' && message.resource === resourceType) {
-                if (emptyListTimeout) {
-                  clearTimeout(emptyListTimeout);
-                  emptyListTimeout = null;
-                }
-                setHasFetched(true);
-                setIsLoading(false);
-
-                const action = message.action?.toUpperCase();
-                const rawItem = message.data;
-
-                if (!rawItem) return;
-
-                // Transform raw K8s object to frontend format
-                const item = transformFn(rawItem);
-
-                if (action === 'ADDED' || action === 'MODIFIED') {
-                  setData((prev) => {
-                    const itemKey = getKey(item);
-                    const existingIndex = prev.findIndex((p) => getKey(p) === itemKey);
-
-                    if (existingIndex >= 0) {
-                      // Update existing item
-                      const updated = [...prev];
-                      updated[existingIndex] = item;
-                      return updated;
-                    } else {
-                      // Add new item
-                      return [...prev, item];
-                    }
-                  });
-                } else if (action === 'DELETED') {
-                  const itemKey = getKey(item);
-                  setData((prev) => prev.filter((p) => getKey(p) !== itemKey));
-                }
-              } else if (message.type === 'subscribed' && message.resource === resourceType) {
-                if (isRealtimeDebug()) console.log(`Subscribed to ${displayName}`);
-                // If no resource_update arrives within 2s, list is truly empty
-                emptyListTimeout = setTimeout(() => {
-                  emptyListTimeout = null;
-                  setHasFetched(true);
-                  setIsLoading(false);
-                  setEmptyListConfirmed(true);
-                }, 2000);
-              } else if (message.type === 'error') {
-                console.error(`WebSocket error for ${displayName}:`, message.message);
-                setError(message.message || 'Unknown error');
+              if (update.action === WatchAction.ADDED || update.action === WatchAction.MODIFIED) {
+                setData((prev) => {
+                  const idx = prev.findIndex((p) => getKey(p) === itemKey);
+                  if (idx >= 0) {
+                    const updated = [...prev];
+                    updated[idx] = item;
+                    return updated;
+                  }
+                  return [...prev, item];
+                });
+              } else if (update.action === WatchAction.DELETED) {
+                setData((prev) => prev.filter((p) => getKey(p) !== itemKey));
               }
-            } catch (e) {
-              console.error(`Error parsing ${displayName} message:`, e);
+            } else if (response.message.case === 'error') {
+              console.error(`gRPC error for ${displayName}:`, response.message.value.message);
+              setError(response.message.value.message);
             }
-          };
-
-          ws.onerror = (event) => {
-            console.error(`WebSocket error for ${displayName}:`, event);
-            setError(`Connection error for ${displayName}`);
-          };
-
-          ws.onclose = () => {
-            if (isRealtimeDebug()) console.log(`WebSocket disconnected for ${displayName}`);
-
-            // Attempt to reconnect after 3 seconds
-            reconnectTimeout = setTimeout(() => {
-              if (isRealtimeDebug()) console.log(`Attempting to reconnect to ${displayName}...`);
-              connect();
-            }, 3000);
-          };
-        } catch (err) {
-          console.error(`Failed to connect WebSocket for ${displayName}:`, err);
-          setError(`Failed to connect to ${displayName} stream`);
-
-          // Attempt to reconnect
-          reconnectTimeout = setTimeout(connect, 3000);
+          }
+        } catch (err: unknown) {
+          const isAbort = err instanceof Error && (err.name === 'AbortError' || err.message.includes('aborted'));
+          if (isAbort) return;
+          console.error(`gRPC stream error for ${displayName}:`, err);
+          setError(`Connection error for ${displayName}`);
         }
       };
 
-      connect();
+      startStream();
 
       return () => {
-        if (reconnectTimeout) {
-          clearTimeout(reconnectTimeout);
-        }
-        if (emptyListTimeout) {
-          clearTimeout(emptyListTimeout);
-        }
-        if (ws) {
-          ws.close();
-        }
+        abortController.abort();
+        if (emptyListTimeout) clearTimeout(emptyListTimeout);
       };
     }, []);
 
@@ -1237,69 +1218,71 @@ export function useRealtimeCustomResources(crdName: string | null): {
   const [data, setData] = useState<CustomResource[]>([]);
   const [isLoading, setIsLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
-  const resourceType = crdName ? `customresources/${crdName}` : '';
 
   useEffect(() => {
-    if (!crdName || !resourceType) {
+    if (!crdName) {
       setData([]);
       setIsLoading(false);
       return;
     }
-    let ws: WebSocket | null = null;
-    let reconnectTimeout: ReturnType<typeof setTimeout>;
-    const connect = () => {
+
+    const abortController = new AbortController();
+
+    const startStream = async () => {
       try {
-        const protocol = window.location.protocol === 'https:' ? 'wss' : 'ws';
-        const host = window.location.host;
-        const wsUrl = `${protocol}://${host}/ws`;
-        ws = new WebSocket(wsUrl);
-        ws.onopen = () => {
-          setError(null);
-          ws!.send(JSON.stringify({ type: 'subscribe', resource: resourceType }));
-          setIsLoading(false);
-        };
-        ws.onmessage = (event) => {
-          try {
-            const message: WebSocketMessage = JSON.parse(event.data);
-            if (message.type === 'resource_update' && message.resource === resourceType && message.data) {
-              const action = (message.action || '').toUpperCase();
-              const item = transformCustomResource(message.data);
-              const itemKey = getCustomResourceKey(item);
-              if (action === 'ADDED' || action === 'MODIFIED') {
-                setData((prev) => {
-                  const idx = prev.findIndex((p) => getCustomResourceKey(p) === itemKey);
-                  if (idx >= 0) {
-                    const next = [...prev];
-                    next[idx] = item;
-                    return next;
-                  }
-                  return [...prev, item];
-                });
-              } else if (action === 'DELETED') {
-                setData((prev) => prev.filter((p) => getCustomResourceKey(p) !== itemKey));
-              }
-            } else if (message.type === 'error') {
-              setError(message.message || 'Unknown error');
+        const client = getKubeWatchClient();
+        setError(null);
+
+        const stream = client.watchMany(
+          {
+            subscriptions: [{
+              resourceType: ProtoResourceType.CUSTOM_RESOURCES,
+              crdName,
+            }],
+          },
+          { signal: abortController.signal }
+        );
+
+        setIsLoading(false);
+
+        for await (const response of stream) {
+          if (response.message.case === 'resourceUpdate') {
+            const update = response.message.value;
+            const rawItem = JSON.parse(new TextDecoder().decode(update.data));
+            const item = transformCustomResource(rawItem);
+            const itemKey = getCustomResourceKey(item);
+
+            if (update.action === WatchAction.ADDED || update.action === WatchAction.MODIFIED) {
+              setData((prev) => {
+                const idx = prev.findIndex((p) => getCustomResourceKey(p) === itemKey);
+                if (idx >= 0) {
+                  const next = [...prev];
+                  next[idx] = item;
+                  return next;
+                }
+                return [...prev, item];
+              });
+            } else if (update.action === WatchAction.DELETED) {
+              setData((prev) => prev.filter((p) => getCustomResourceKey(p) !== itemKey));
             }
-          } catch (e) {
-            console.error('Custom resource message parse error:', e);
+          } else if (response.message.case === 'error') {
+            setError(response.message.value.message);
           }
-        };
-        ws.onerror = () => setError('Connection error');
-        ws.onclose = () => {
-          reconnectTimeout = setTimeout(connect, 3000);
-        };
-      } catch (err) {
-        setError('Failed to connect');
-        reconnectTimeout = setTimeout(connect, 3000);
+        }
+      } catch (err: unknown) {
+        const isAbort = err instanceof Error && (err.name === 'AbortError' || err.message.includes('aborted'));
+        if (isAbort) return;
+        console.error('Custom resource gRPC stream error:', err);
+        setError('Connection error');
       }
     };
-    connect();
+
+    startStream();
+
     return () => {
-      clearTimeout(reconnectTimeout);
-      ws?.close();
+      abortController.abort();
     };
-  }, [crdName, resourceType]);
+  }, [crdName]);
 
   return { data, isLoading, error };
 }

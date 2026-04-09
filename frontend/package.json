@@ -11,8 +11,10 @@
    },
    "dependencies": {
       "@astronautlabs/jsonpath": "^1.1.2",
+      "@bufbuild/protobuf": "^2.11.0",
+      "@connectrpc/connect": "^2.1.1",
+      "@connectrpc/connect-web": "^2.1.1",
       "@heroicons/react": "^2.2.0",
-      "@improbable-eng/grpc-web": "^0.15.0",
       "@tanstack/react-query": "^5.60.0",
       "@xterm/addon-fit": "^0.11.0",
       "@xterm/addon-web-links": "^0.12.0",
@@ -22,7 +24,6 @@
       "chart.js": "^4.5.1",
       "clsx": "^2.1.1",
       "cron-parser": "^5.5.0",
-      "google-protobuf": "^3.21.4",
       "html-to-image": "^1.11.13",
       "lucide-react": "^0.460.0",
       "react": "^18.3.1",
@@ -37,6 +38,7 @@
       "yaml": "^2.8.2"
    },
    "devDependencies": {
+      "@bufbuild/protoc-gen-es": "^2.11.0",
       "@types/react": "^18.3.12",
       "@types/react-dom": "^18.3.1",
       "@vitejs/plugin-react-swc": "^3.7.0",

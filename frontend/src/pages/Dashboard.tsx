@@ -283,7 +283,7 @@ export const Dashboard = () => {
                         padding: '10px 12px',
                         border: '1px solid var(--color-border)',
                       }}
-                      formatter={(value: number | undefined, name: string | undefined) => [`${formatCPU(Number(value ?? 0))} cores`, name ?? '']}
+                      formatter={(value, name) => [`${formatCPU(Number(value ?? 0))} cores`, String(name ?? '')]}
                       labelFormatter={() => `Total: ${formatCPU(totalCPU)} cores`}
                     />
                   </PieChart>
@@ -331,7 +331,7 @@ export const Dashboard = () => {
                         padding: '10px 12px',
                         border: '1px solid var(--color-border)',
                       }}
-                      formatter={(value: number | undefined, name: string | undefined) => [formatMemory(Number(value ?? 0)), name ?? '']}
+                      formatter={(value, name) => [formatMemory(Number(value ?? 0)), String(name ?? '')]}
                       labelFormatter={() => `Total: ${formatMemory(totalMemory)}`}
                     />
                   </PieChart>
@@ -379,9 +379,9 @@ export const Dashboard = () => {
                         padding: '10px 12px',
                         border: '1px solid var(--color-border)',
                       }}
-                      formatter={(value: number | undefined, name: string | undefined) => [
+                      formatter={(value, name) => [
                         `${Math.round(Number(value ?? 0))} pods`,
-                        name ?? '',
+                        String(name ?? ''),
                       ]}
                       labelFormatter={() => `Capacity: ${totalPodsAllocatable} pods`}
                     />

@@ -4,8 +4,13 @@ package kubernetes;
 
 // Main service for watching Kubernetes resources
 service KubernetesWatch {
-  // Bidirectional streaming for real-time updates
+  // Bidirectional streaming for real-time updates (non-browser clients)
   rpc WatchResources(stream WatchRequest) returns (stream WatchResponse);
+
+  // Server-streaming watch for browser gRPC-Web clients.
+  // Subscriptions are declared up-front; the server streams events for all
+  // requested resource types until the client cancels.
+  rpc WatchMany(WatchManyRequest) returns (stream WatchResponse);
   
   // Get initial resource list
   rpc ListResources(ListRequest) returns (ListResponse);
@@ -27,6 +32,8 @@ message WatchRequest {
 message SubscribeRequest {
   ResourceType resource_type = 1;
   optional string namespace = 2;
+  // Required when resource_type = CUSTOM_RESOURCES; the CRD name, e.g. "crontabs.stable.example.com"
+  optional string crd_name = 3;
 }
 
 message UnsubscribeRequest {
@@ -40,6 +47,13 @@ message PingRequest {
 message ListRequest {
   ResourceType resource_type = 1;
   optional string namespace = 2;
+  // Required when resource_type = CUSTOM_RESOURCES; the CRD name, e.g. "crontabs.stable.example.com"
+  optional string crd_name = 3;
+}
+
+// Used by WatchMany: subscribe to multiple resource types in one request.
+message WatchManyRequest {
+  repeated SubscribeRequest subscriptions = 1;
 }
 
 message HealthRequest {}
@@ -105,6 +119,31 @@ enum ResourceType {
   CRONJOBS = 9;
   REPLICASETS = 10;
   NAMESPACES = 11;
+  CONFIGMAPS = 12;
+  SECRETS = 13;
+  RESOURCE_QUOTAS = 14;
+  LIMIT_RANGES = 15;
+  HPA = 16;
+  PDB = 17;
+  INGRESSES = 18;
+  INGRESS_CLASSES = 19;
+  ENDPOINTS = 20;
+  NETWORK_POLICIES = 21;
+  PERSISTENT_VOLUMES = 22;
+  PERSISTENT_VOLUME_CLAIMS = 23;
+  STORAGE_CLASSES = 24;
+  SERVICE_ACCOUNTS = 25;
+  CLUSTER_ROLES = 26;
+  CLUSTER_ROLE_BINDINGS = 27;
+  ROLES = 28;
+  ROLE_BINDINGS = 29;
+  PRIORITY_CLASSES = 30;
+  RUNTIME_CLASSES = 31;
+  LEASES = 32;
+  MUTATING_WEBHOOK_CONFIGURATIONS = 33;
+  VALIDATING_WEBHOOK_CONFIGURATIONS = 34;
+  CUSTOM_RESOURCE_DEFINITIONS = 35;
+  CUSTOM_RESOURCES = 36;
 }
 
 enum WatchAction {

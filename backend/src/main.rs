@@ -357,18 +357,16 @@ async fn main() -> anyhow::Result<()> {
 
     let index_html = static_dir.join("index.html");
     let assets_dir = static_dir.join("assets");
-    let config_js = static_dir.join("config.js");
     let favicon_svg = static_dir.join("favicon.svg");
 
     // Clone client for gRPC server before moving state
     let grpc_client = state.client.clone();
 
     let app = Router::new()
-        .route("/ws", get(ws_handler::ws_handler))  // WebSocket endpoint
         .route("/api/exec", get(ws_handler::exec_ws_handler))
         .nest("/api", api)
         .nest_service("/assets", ServeDir::new(assets_dir))
-        .route_service("/config.js", ServeFile::new(config_js))
+        .route("/config.js", get(serve_config_js))
         .route_service("/favicon.svg", ServeFile::new(favicon_svg))
         .route_service("/", ServeFile::new(index_html.clone()))
         .fallback_service(ServeFile::new(index_html))
@@ -416,12 +414,28 @@ async fn health() -> impl IntoResponse {
     (StatusCode::OK, Json(body))
 }
 
+/// Serves the runtime JS config dynamically so `GRPC_URL` can be injected per
+/// environment without rebuilding the frontend.  The browser-visible `grpcUrl`
+/// defaults to an empty string (same-origin via ingress) unless overridden by
+/// the `GRPC_URL` environment variable.
+async fn serve_config_js() -> impl IntoResponse {
+    let backend_url = std::env::var("BACKEND_URL").unwrap_or_else(|_| "/api".to_string());
+    let grpc_url = std::env::var("GRPC_URL").unwrap_or_default();
+    let body = format!(
+        "window.__PERTISK_CONFIG__ = {{ backendUrl: \"{backend_url}\", grpcUrl: \"{grpc_url}\" }};\n"
+    );
+    (
+        [(header::CONTENT_TYPE, "application/javascript; charset=utf-8")],
+        body,
+    )
+}
+
 async fn normalize_websocket_upgrade_headers(
     mut request: Request<Body>,
     next: Next,
 ) -> Response {
     let path = request.uri().path();
-    if path == "/ws" || path == "/api/exec" {
+    if path == "/api/exec" {
         let headers = request.headers_mut();
         let has_upgrade = headers
             .get(header::UPGRADE)

@@ -22,6 +22,12 @@ export default defineConfig({
         target: process.env.VITE_BACKEND_URL || "http://localhost:8091",
         changeOrigin: true,
       },
+      // Proxy gRPC-Web calls to the tonic-web server during local development.
+      // Matches /kubernetes.KubernetesWatch/* — the generated service package path.
+      "/kubernetes.": {
+        target: process.env.VITE_GRPC_URL || "http://localhost:50061",
+        changeOrigin: true,
+      },
     },
   },
   build: {
