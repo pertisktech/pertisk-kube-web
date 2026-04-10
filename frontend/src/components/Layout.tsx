@@ -52,9 +52,7 @@ interface NavItem {
 
 const NAV_ITEMS: NavItem[] = [
   { label: 'Dashboard', path: '/', icon: LayoutDashboard },
-  { label: 'Cluster', path: '/cluster', icon: Server },
   { label: 'Nodes', path: '/nodes', icon: Network },
-  { label: 'Resource Map', path: '/resource-map', icon: Share2 },
 ];
 
 const NAMESPACE_ITEM: NavItem = {
@@ -1020,7 +1018,41 @@ export const Layout = ({ username, onLogout }: LayoutProps) => {
                 )}
               </div>
 
-            <div className="space-y-1 order-11">
+            <Link
+              to="/cluster"
+              onClick={() => setSidebarOpen(false)}
+              className={cn(
+                'flex items-center gap-3 px-4 py-2 rounded-lg transition-colors text-[14px] font-medium',
+                'order-11',
+                sidebarCollapsed && 'justify-center px-2',
+                isActive('/cluster')
+                  ? 'bg-hover text-[var(--color-primary)] font-semibold'
+                  : 'text-text-secondary hover:bg-hover hover:text-text'
+              )}
+              title="Cluster"
+            >
+              <Server size={18} className="flex-shrink-0" />
+              {!sidebarCollapsed && <span>Cluster</span>}
+            </Link>
+
+            <Link
+              to="/resource-map"
+              onClick={() => setSidebarOpen(false)}
+              className={cn(
+                'flex items-center gap-3 px-4 py-2 rounded-lg transition-colors text-[14px] font-medium',
+                'order-12',
+                sidebarCollapsed && 'justify-center px-2',
+                isActive('/resource-map')
+                  ? 'bg-hover text-[var(--color-primary)] font-semibold'
+                  : 'text-text-secondary hover:bg-hover hover:text-text'
+              )}
+              title="Resource Map"
+            >
+              <Share2 size={18} className="flex-shrink-0" />
+              {!sidebarCollapsed && <span>Resource Map</span>}
+            </Link>
+
+            <div className="space-y-1 order-last">
               <button
                 type="button"
                 onClick={() => {
