@@ -325,13 +325,25 @@ export const useRealtimePods = <T>(options: UseRealtimePodsOptions = {}) => {
   
   const [data, setData] = useState<T[]>([]);
   const [isConnected, setIsConnected] = useState(false);
+  const [isLoading, setIsLoading] = useState(true);
+  const [hasFetched, setHasFetched] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const hasFetchedRef = useRef(false);
   const wsRef = useRef<WebSocket | null>(null);
   const reconnectTimeoutRef = useRef<number>();
+  const emptyListTimeoutRef = useRef<number>();
   const reconnectAttemptsRef = useRef(0);
   const maxReconnectAttempts = 10;
   const deletionTimeoutsRef = useRef<Map<string, number>>(new Map()); // Track deletion timeouts
   const deletedPodsRef = useRef<Set<string>>(new Set()); // Track deleted pods to prevent re-adding
+
+  const markFetched = useCallback(() => {
+    if (!hasFetchedRef.current) {
+      hasFetchedRef.current = true;
+      setHasFetched(true);
+    }
+    setIsLoading(false);
+  }, []);
 
   const syncPodDetails = useCallback(async () => {
     const token = getAuthToken();
@@ -418,6 +430,12 @@ export const useRealtimePods = <T>(options: UseRealtimePodsOptions = {}) => {
           const message = JSON.parse(event.data);
 
           if (message.type === 'resource_update' && message.resource === 'pods') {
+            if (emptyListTimeoutRef.current) {
+              clearTimeout(emptyListTimeoutRef.current);
+              emptyListTimeoutRef.current = undefined;
+            }
+            markFetched();
+
             const { action, data: rawPodData } = message;
             const transformedPod = transformPod(rawPodData);
             
@@ -576,6 +594,16 @@ export const useRealtimePods = <T>(options: UseRealtimePodsOptions = {}) => {
             });
           } else if (message.type === 'subscribed') {
             if (isRealtimeDebug()) console.log('[useRealtimePods] Subscription confirmed');
+            // Avoid showing empty state immediately while first events are still in flight.
+            if (!hasFetchedRef.current) {
+              if (emptyListTimeoutRef.current) {
+                clearTimeout(emptyListTimeoutRef.current);
+              }
+              emptyListTimeoutRef.current = window.setTimeout(() => {
+                emptyListTimeoutRef.current = undefined;
+                markFetched();
+              }, 2000);
+            }
           } else if (message.type === 'error') {
             console.error('[useRealtimePods] Server error:', message.message);
             setError(message.message);
@@ -617,7 +645,7 @@ export const useRealtimePods = <T>(options: UseRealtimePodsOptions = {}) => {
       console.error('[useRealtimePods] Failed to create WebSocket:', err);
       setError('Failed to create WebSocket connection');
     }
-  }, [enabled, reconnectInterval]);
+  }, [enabled, reconnectInterval, markFetched]);
 
   const disconnect = useCallback(() => {
     if (wsRef.current) {
@@ -626,6 +654,10 @@ export const useRealtimePods = <T>(options: UseRealtimePodsOptions = {}) => {
     }
     if (reconnectTimeoutRef.current) {
       clearTimeout(reconnectTimeoutRef.current);
+    }
+    if (emptyListTimeoutRef.current) {
+      clearTimeout(emptyListTimeoutRef.current);
+      emptyListTimeoutRef.current = undefined;
     }
     
     // Clear all pending deletion timeouts
@@ -665,5 +697,7 @@ export const useRealtimePods = <T>(options: UseRealtimePodsOptions = {}) => {
     error,
     reconnect: connect,
     disconnect,
+    isLoading,
+    hasFetched,
   };
 };

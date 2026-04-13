@@ -74,12 +74,10 @@ export const PodsPage = () => {
   const [, forceUpdate] = useState({});
   
   // WebSocket realtime data (always enabled)
-  const { data, isConnected, error } = useRealtimePods<Pod>({
+  const { data, isLoading, error } = useRealtimePods<Pod>({
     enabled: true,
   });
   const { data: eventsData } = useRealtimeEvents();
-  
-  const isLoading = !isConnected && data.length === 0;
   
   const { selectedNamespaces, resourceNameFilter } = useNamespace();
   const [selectedPod, setSelectedPod] = useState<Pod | null>(null);

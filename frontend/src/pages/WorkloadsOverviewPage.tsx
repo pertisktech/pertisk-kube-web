@@ -413,7 +413,7 @@ export const WorkloadsOverviewPage = () => {
   const { selectedNamespaces } = useNamespace();
 
   // Realtime workload data (WebSocket)
-  const { data: pods, isConnected: podsConnected } = useRealtimePods<Pod>();
+  const { data: pods, isConnected: podsConnected, isLoading: podsLoading } = useRealtimePods<Pod>();
   const { data: deployments, isLoading: deploymentsLoading } = useRealtimeDeployments();
   const { data: statefulsets, isLoading: statefulsetsLoading } = useRealtimeStatefulSets();
   const { data: daemonsets, isLoading: daemonsetsLoading } = useRealtimeDaemonSets();
@@ -421,7 +421,6 @@ export const WorkloadsOverviewPage = () => {
   const { data: jobs, isLoading: jobsLoading } = useRealtimeJobs();
   const { data: cronjobs, isLoading: cronjobsLoading } = useRealtimeCronJobs();
 
-  const podsLoading = !podsConnected && pods.length === 0;
   const workloadRealtimeConnected =
     podsConnected &&
     !deploymentsLoading &&

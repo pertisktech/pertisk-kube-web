@@ -1,7 +1,7 @@
 SHELL := /bin/sh
 
-K8S_KUBECONFIG ?= /Users/dotnetnat/.kube/hetznet-kubeadm-cluster.yaml
-#K8S_KUBECONFIG ?= /Users/dotnetnat/.kube/talos-omni-proxmox-cluster-kubeconfig.yaml
+#K8S_KUBECONFIG ?= /Users/dotnetnat/.kube/hetznet-kubeadm-cluster.yaml
+K8S_KUBECONFIG ?= /Users/nat/.kube/talos-prod-cluster-kubeconfig.yaml
 VERSION ?= $(shell V=$$(git describe --tags --always --abbrev=7 2>/dev/null || echo ""); \
 	if echo "$$V" | grep -qE '^v?[0-9]+\.'; then \
 		echo "$$V" | sed 's/^v//; s/-/./g'; \
@@ -273,17 +273,82 @@ release: docker-build-multi helm-deploy
 # Skaffold targets
 # Run once: build, push, and deploy to Kubernetes
 skaffold-run:
-	@FOUR_DIGIT_TAG=$$(( (RANDOM % 9000) + 1000 )); \
-	echo "Using FOUR_DIGIT_TAG=$$FOUR_DIGIT_TAG"; \
-	FOUR_DIGIT_TAG=$$FOUR_DIGIT_TAG skaffold run --kubeconfig=$(K8S_KUBECONFIG)
+	@set -e; \
+	HELM_SHORT=$$(helm version --short 2>/dev/null || true); \
+	HELM3_BIN=$$(command -v helm3 2>/dev/null || true); \
+	if echo "$$HELM_SHORT" | grep -q '^v4\.'; then \
+		if [ -z "$$HELM3_BIN" ] && command -v brew >/dev/null 2>&1; then \
+			BREW_HELM3=$$(brew --prefix helm@3 2>/dev/null)/bin/helm; \
+			if [ -x "$$BREW_HELM3" ]; then HELM3_BIN="$$BREW_HELM3"; fi; \
+		fi; \
+		if [ -z "$$HELM3_BIN" ]; then \
+			echo "Helm v4 detected ($$HELM_SHORT), but Skaffold v2 Helm deploy needs Helm v3."; \
+			echo "Install Helm 3 (e.g. 'brew install helm@3') or upgrade Skaffold to a Helm v4-compatible version."; \
+			exit 1; \
+		fi; \
+		TMP_BIN=$$(mktemp -d); \
+		trap 'rm -rf "$$TMP_BIN"' EXIT INT TERM; \
+		ln -sf "$$HELM3_BIN" "$$TMP_BIN/helm"; \
+		for p in $$HOME/Library/helm/plugins/skaffold-render*; do [ -d "$$p" ] && rm -rf "$$p"; done; \
+		FOUR_DIGIT_TAG=$$(( (RANDOM % 9000) + 1000 )); \
+		echo "Using FOUR_DIGIT_TAG=$$FOUR_DIGIT_TAG"; \
+		PATH="$$TMP_BIN:$$PATH" FOUR_DIGIT_TAG=$$FOUR_DIGIT_TAG skaffold run --kubeconfig=$(K8S_KUBECONFIG); \
+	else \
+		for p in $$HOME/Library/helm/plugins/skaffold-render*; do [ -d "$$p" ] && rm -rf "$$p"; done; \
+		FOUR_DIGIT_TAG=$$(( (RANDOM % 9000) + 1000 )); \
+		echo "Using FOUR_DIGIT_TAG=$$FOUR_DIGIT_TAG"; \
+		FOUR_DIGIT_TAG=$$FOUR_DIGIT_TAG skaffold run --kubeconfig=$(K8S_KUBECONFIG); \
+	fi
 
 # Run once with production profile (git tag versioning + prod values)
 skaffold-run-prod:
-	skaffold run -p prod --kubeconfig=$(K8S_KUBECONFIG)
+	@set -e; \
+	HELM_SHORT=$$(helm version --short 2>/dev/null || true); \
+	HELM3_BIN=$$(command -v helm3 2>/dev/null || true); \
+	if echo "$$HELM_SHORT" | grep -q '^v4\.'; then \
+		if [ -z "$$HELM3_BIN" ] && command -v brew >/dev/null 2>&1; then \
+			BREW_HELM3=$$(brew --prefix helm@3 2>/dev/null)/bin/helm; \
+			if [ -x "$$BREW_HELM3" ]; then HELM3_BIN="$$BREW_HELM3"; fi; \
+		fi; \
+		if [ -z "$$HELM3_BIN" ]; then \
+			echo "Helm v4 detected ($$HELM_SHORT), but Skaffold v2 Helm deploy needs Helm v3."; \
+			echo "Install Helm 3 (e.g. 'brew install helm@3') or upgrade Skaffold to a Helm v4-compatible version."; \
+			exit 1; \
+		fi; \
+		TMP_BIN=$$(mktemp -d); \
+		trap 'rm -rf "$$TMP_BIN"' EXIT INT TERM; \
+		ln -sf "$$HELM3_BIN" "$$TMP_BIN/helm"; \
+		for p in $$HOME/Library/helm/plugins/skaffold-render*; do [ -d "$$p" ] && rm -rf "$$p"; done; \
+		PATH="$$TMP_BIN:$$PATH" skaffold run -p prod --kubeconfig=$(K8S_KUBECONFIG); \
+	else \
+		for p in $$HOME/Library/helm/plugins/skaffold-render*; do [ -d "$$p" ] && rm -rf "$$p"; done; \
+		skaffold run -p prod --kubeconfig=$(K8S_KUBECONFIG); \
+	fi
 
 # Watch mode: rebuild and redeploy on source changes
 skaffold-dev:
-	skaffold dev --kubeconfig=$(K8S_KUBECONFIG)
+	@set -e; \
+	HELM_SHORT=$$(helm version --short 2>/dev/null || true); \
+	HELM3_BIN=$$(command -v helm3 2>/dev/null || true); \
+	if echo "$$HELM_SHORT" | grep -q '^v4\.'; then \
+		if [ -z "$$HELM3_BIN" ] && command -v brew >/dev/null 2>&1; then \
+			BREW_HELM3=$$(brew --prefix helm@3 2>/dev/null)/bin/helm; \
+			if [ -x "$$BREW_HELM3" ]; then HELM3_BIN="$$BREW_HELM3"; fi; \
+		fi; \
+		if [ -z "$$HELM3_BIN" ]; then \
+			echo "Helm v4 detected ($$HELM_SHORT), but Skaffold v2 Helm deploy needs Helm v3."; \
+			echo "Install Helm 3 (e.g. 'brew install helm@3') or upgrade Skaffold to a Helm v4-compatible version."; \
+			exit 1; \
+		fi; \
+		TMP_BIN=$$(mktemp -d); \
+		trap 'rm -rf "$$TMP_BIN"' EXIT INT TERM; \
+		ln -sf "$$HELM3_BIN" "$$TMP_BIN/helm"; \
+		for p in $$HOME/Library/helm/plugins/skaffold-render*; do [ -d "$$p" ] && rm -rf "$$p"; done; \
+		PATH="$$TMP_BIN:$$PATH" skaffold dev --kubeconfig=$(K8S_KUBECONFIG); \
+	else \
+		for p in $$HOME/Library/helm/plugins/skaffold-render*; do [ -d "$$p" ] && rm -rf "$$p"; done; \
+		skaffold dev --kubeconfig=$(K8S_KUBECONFIG); \
+	fi
 
 # Build and push the image only (no deploy)
 skaffold-build:
@@ -291,7 +356,28 @@ skaffold-build:
 
 # Tear down the Helm release deployed by Skaffold
 skaffold-delete:
-	skaffold delete --kubeconfig=$(K8S_KUBECONFIG)
+	@set -e; \
+	HELM_SHORT=$$(helm version --short 2>/dev/null || true); \
+	HELM3_BIN=$$(command -v helm3 2>/dev/null || true); \
+	if echo "$$HELM_SHORT" | grep -q '^v4\.'; then \
+		if [ -z "$$HELM3_BIN" ] && command -v brew >/dev/null 2>&1; then \
+			BREW_HELM3=$$(brew --prefix helm@3 2>/dev/null)/bin/helm; \
+			if [ -x "$$BREW_HELM3" ]; then HELM3_BIN="$$BREW_HELM3"; fi; \
+		fi; \
+		if [ -z "$$HELM3_BIN" ]; then \
+			echo "Helm v4 detected ($$HELM_SHORT), but Skaffold v2 Helm deploy needs Helm v3."; \
+			echo "Install Helm 3 (e.g. 'brew install helm@3') or upgrade Skaffold to a Helm v4-compatible version."; \
+			exit 1; \
+		fi; \
+		TMP_BIN=$$(mktemp -d); \
+		trap 'rm -rf "$$TMP_BIN"' EXIT INT TERM; \
+		ln -sf "$$HELM3_BIN" "$$TMP_BIN/helm"; \
+		for p in $$HOME/Library/helm/plugins/skaffold-render*; do [ -d "$$p" ] && rm -rf "$$p"; done; \
+		PATH="$$TMP_BIN:$$PATH" skaffold delete --kubeconfig=$(K8S_KUBECONFIG); \
+	else \
+		for p in $$HOME/Library/helm/plugins/skaffold-render*; do [ -d "$$p" ] && rm -rf "$$p"; done; \
+		skaffold delete --kubeconfig=$(K8S_KUBECONFIG); \
+	fi
 
 # Show current version from git
 version:
