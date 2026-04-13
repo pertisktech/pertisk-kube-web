@@ -271,59 +271,34 @@ release: docker-build-multi helm-deploy
 	@echo "✓ Released version $(VERSION)"
 
 # Skaffold targets
-# Run once: build, push, and deploy to Kubernetes
+# Run once: build and push with Skaffold, then deploy with Helm.
 skaffold-run:
 	@set -e; \
-	HELM_SHORT=$$(helm version --short 2>/dev/null || true); \
-	HELM3_BIN=$$(command -v helm3 2>/dev/null || true); \
-	if echo "$$HELM_SHORT" | grep -q '^v4\.'; then \
-		if [ -z "$$HELM3_BIN" ] && command -v brew >/dev/null 2>&1; then \
-			BREW_HELM3=$$(brew --prefix helm@3 2>/dev/null)/bin/helm; \
-			if [ -x "$$BREW_HELM3" ]; then HELM3_BIN="$$BREW_HELM3"; fi; \
-		fi; \
-		if [ -z "$$HELM3_BIN" ]; then \
-			echo "Helm v4 detected ($$HELM_SHORT), but Skaffold v2 Helm deploy needs Helm v3."; \
-			echo "Install Helm 3 (e.g. 'brew install helm@3') or upgrade Skaffold to a Helm v4-compatible version."; \
-			exit 1; \
-		fi; \
-		TMP_BIN=$$(mktemp -d); \
-		trap 'rm -rf "$$TMP_BIN"' EXIT INT TERM; \
-		ln -sf "$$HELM3_BIN" "$$TMP_BIN/helm"; \
-		for p in $$HOME/Library/helm/plugins/skaffold-render*; do [ -d "$$p" ] && rm -rf "$$p"; done; \
-		FOUR_DIGIT_TAG=$$(( (RANDOM % 9000) + 1000 )); \
-		echo "Using FOUR_DIGIT_TAG=$$FOUR_DIGIT_TAG"; \
-		PATH="$$TMP_BIN:$$PATH" FOUR_DIGIT_TAG=$$FOUR_DIGIT_TAG skaffold run --kubeconfig=$(K8S_KUBECONFIG); \
-	else \
-		for p in $$HOME/Library/helm/plugins/skaffold-render*; do [ -d "$$p" ] && rm -rf "$$p"; done; \
-		FOUR_DIGIT_TAG=$$(( (RANDOM % 9000) + 1000 )); \
-		echo "Using FOUR_DIGIT_TAG=$$FOUR_DIGIT_TAG"; \
-		FOUR_DIGIT_TAG=$$FOUR_DIGIT_TAG skaffold run --kubeconfig=$(K8S_KUBECONFIG); \
-	fi
+	FOUR_DIGIT_TAG=$$(( (RANDOM % 9000) + 1000 )); \
+	echo "Building image with tag $$FOUR_DIGIT_TAG via Skaffold..."; \
+	FOUR_DIGIT_TAG=$$FOUR_DIGIT_TAG skaffold build --kubeconfig=$(K8S_KUBECONFIG) -t "$$FOUR_DIGIT_TAG"; \
+	echo "Deploying Helm release $(HELM_RELEASE) with tag $$FOUR_DIGIT_TAG..."; \
+	helm upgrade --install $(HELM_RELEASE) $(HELM_CHART_DIR) --kubeconfig=$(K8S_KUBECONFIG) -n $(HELM_NAMESPACE) \
+		--create-namespace \
+		--set app.image.tag="$$FOUR_DIGIT_TAG"
 
 # Run once with production profile (git tag versioning + prod values)
 skaffold-run-prod:
 	@set -e; \
-	HELM_SHORT=$$(helm version --short 2>/dev/null || true); \
-	HELM3_BIN=$$(command -v helm3 2>/dev/null || true); \
-	if echo "$$HELM_SHORT" | grep -q '^v4\.'; then \
-		if [ -z "$$HELM3_BIN" ] && command -v brew >/dev/null 2>&1; then \
-			BREW_HELM3=$$(brew --prefix helm@3 2>/dev/null)/bin/helm; \
-			if [ -x "$$BREW_HELM3" ]; then HELM3_BIN="$$BREW_HELM3"; fi; \
-		fi; \
-		if [ -z "$$HELM3_BIN" ]; then \
-			echo "Helm v4 detected ($$HELM_SHORT), but Skaffold v2 Helm deploy needs Helm v3."; \
-			echo "Install Helm 3 (e.g. 'brew install helm@3') or upgrade Skaffold to a Helm v4-compatible version."; \
-			exit 1; \
-		fi; \
-		TMP_BIN=$$(mktemp -d); \
-		trap 'rm -rf "$$TMP_BIN"' EXIT INT TERM; \
-		ln -sf "$$HELM3_BIN" "$$TMP_BIN/helm"; \
-		for p in $$HOME/Library/helm/plugins/skaffold-render*; do [ -d "$$p" ] && rm -rf "$$p"; done; \
-		PATH="$$TMP_BIN:$$PATH" skaffold run -p prod --kubeconfig=$(K8S_KUBECONFIG); \
-	else \
-		for p in $$HOME/Library/helm/plugins/skaffold-render*; do [ -d "$$p" ] && rm -rf "$$p"; done; \
-		skaffold run -p prod --kubeconfig=$(K8S_KUBECONFIG); \
-	fi
+	TMP_BUILD_OUTPUT=$$(mktemp); \
+	trap 'rm -f "$$TMP_BUILD_OUTPUT"' EXIT INT TERM; \
+	echo "Building image with Skaffold prod profile..."; \
+	skaffold build -p prod --kubeconfig=$(K8S_KUBECONFIG) --file-output "$$TMP_BUILD_OUTPUT"; \
+	IMAGE_TAG=$$(sed -n 's/.*"tag"[[:space:]]*:[[:space:]]*"\([^"]*\)".*/\1/p' "$$TMP_BUILD_OUTPUT" | head -n 1); \
+	if [ -z "$$IMAGE_TAG" ]; then \
+		echo "Failed to parse image tag from skaffold file output"; \
+		exit 1; \
+	fi; \
+	echo "Deploying Helm release $(HELM_RELEASE) with prod values and tag $$IMAGE_TAG..."; \
+	helm upgrade --install $(HELM_RELEASE) $(HELM_CHART_DIR) --kubeconfig=$(K8S_KUBECONFIG) -n $(HELM_NAMESPACE) \
+		--create-namespace \
+		-f helm/pertisk-kube/values-prod.yaml \
+		--set app.image.tag="$$IMAGE_TAG"
 
 # Watch mode: rebuild and redeploy on source changes
 skaffold-dev:

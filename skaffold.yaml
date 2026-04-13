@@ -17,6 +17,8 @@ build:
     push: true
 
 deploy:
+  statusCheck: true
+  statusCheckDeadlineSeconds: 900
   helm:
     releases:
       - name: pertisk-kube
