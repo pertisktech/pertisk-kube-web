@@ -1,7 +1,8 @@
 SHELL := /bin/sh
 
-#K8S_KUBECONFIG ?= /Users/dotnetnat/.kube/hetznet-kubeadm-cluster.yaml
-K8S_KUBECONFIG ?= /Users/nat/.kube/talos-prod-cluster-kubeconfig.yaml
+K8S_KUBECONFIG ?= $(HOME)/.kube/config
+K8S_KUBECONFIG_TALOS ?= /Users/nat/.kube/talos-prod-cluster-kubeconfig.yaml
+K8S_KUBECONFIG_TALOS_HZ ?= /Users/nat/.kube/hetznet-kubeadm-cluster.yaml
 VERSION ?= $(shell V=$$(git describe --tags --always --abbrev=7 2>/dev/null || echo ""); \
 	if echo "$$V" | grep -qE '^v?[0-9]+\.'; then \
 		echo "$$V" | sed 's/^v//; s/-/./g'; \
@@ -29,7 +30,7 @@ GRPC_PORT ?= 50061
 .PHONY: docker-base-build docker-base-push docker-base-push-multi
 .PHONY: helm-install helm-upgrade helm-uninstall helm-template helm-deploy port-forward ingress-hosts lb-url
 .PHONY: helm-lint helm-package helm-push helm-release
-.PHONY: skaffold-run skaffold-run-prod skaffold-dev skaffold-delete skaffold-build
+.PHONY: skaffold-run skaffold-run-talos skaffold-run-talos-hz _skaffold-run skaffold-run-prod skaffold-dev skaffold-delete skaffold-build
 .PHONY: release version
 
 # Development targets
@@ -272,15 +273,34 @@ release: docker-build-multi helm-deploy
 
 # Skaffold targets
 # Run once: build and push with Skaffold, then deploy with Helm.
-skaffold-run:
+_skaffold-run:
 	@set -e; \
 	FOUR_DIGIT_TAG=$$(( (RANDOM % 9000) + 1000 )); \
 	echo "Building image with tag $$FOUR_DIGIT_TAG via Skaffold..."; \
 	FOUR_DIGIT_TAG=$$FOUR_DIGIT_TAG skaffold build --kubeconfig=$(K8S_KUBECONFIG) -t "$$FOUR_DIGIT_TAG"; \
 	echo "Deploying Helm release $(HELM_RELEASE) with tag $$FOUR_DIGIT_TAG..."; \
+	HELM_VALUES_ARG=""; \
+	if [ -n "$(HELM_VALUES_FILE)" ]; then \
+		HELM_VALUES_ARG="-f $(HELM_VALUES_FILE)"; \
+		echo "Using Helm values file: $(HELM_VALUES_FILE)"; \
+	fi; \
 	helm upgrade --install $(HELM_RELEASE) $(HELM_CHART_DIR) --kubeconfig=$(K8S_KUBECONFIG) -n $(HELM_NAMESPACE) \
 		--create-namespace \
+		$$HELM_VALUES_ARG \
 		--set app.image.tag="$$FOUR_DIGIT_TAG"
+
+# Generic/default run (uses current K8S_KUBECONFIG and chart defaults)
+skaffold-run: _skaffold-run
+
+# Talos run
+skaffold-run-talos: K8S_KUBECONFIG=$(K8S_KUBECONFIG_TALOS)
+skaffold-run-talos: HELM_VALUES_FILE=helm/pertisk-kube/values-talos.yaml
+skaffold-run-talos: _skaffold-run
+
+# Talos Hetzner run
+skaffold-run-talos-hz: K8S_KUBECONFIG=$(K8S_KUBECONFIG_TALOS_HZ)
+skaffold-run-talos-hz: HELM_VALUES_FILE=helm/pertisk-kube/values-talos-hz.yaml
+skaffold-run-talos-hz: _skaffold-run
 
 # Run once with production profile (git tag versioning + prod values)
 skaffold-run-prod:
