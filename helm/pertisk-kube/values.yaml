@@ -41,6 +41,21 @@ app:
   minReadySeconds: 10
   terminationGracePeriodSeconds: 30
   podAntiAffinity: true
+  tolerations:
+    - key: node.kubernetes.io/not-ready
+      operator: Exists
+      effect: NoExecute
+      tolerationSeconds: 60
+    - key: node.kubernetes.io/unreachable
+      operator: Exists
+      effect: NoExecute
+      tolerationSeconds: 60
+    - key: node-role.kubernetes.io/control-plane
+      operator: Exists
+      effect: NoSchedule
+    - key: node-role.kubernetes.io/master
+      operator: Exists
+      effect: NoSchedule
   podSecurityContext:
     runAsNonRoot: true
     runAsUser: 65532

@@ -25,6 +25,10 @@ spec:
     spec:
       serviceAccountName: {{ .Values.rbac.serviceAccountName }}
       terminationGracePeriodSeconds: {{ .Values.app.terminationGracePeriodSeconds | default 30 }}
+      {{- if .Values.app.tolerations }}
+      tolerations:
+        {{- toYaml .Values.app.tolerations | nindent 8 }}
+      {{- end }}
       {{- if .Values.app.podAntiAffinity }}
       affinity:
         podAntiAffinity:
