@@ -103,8 +103,7 @@ app:
 ingress:
   enabled: true
   className: "pertisk-rproxy"
-  annotations:
-    cert-manager.io/cluster-issuer: letsencrypt-cloudflare
+  annotations: {}
   hosts:
     - host: dashboard.talos.thaidevops.co
       paths:
