@@ -12,7 +12,9 @@ VERSION ?= $(shell V=$$(git describe --tags --always --abbrev=7 2>/dev/null || e
 	fi)
 DOCKER_REGISTRY ?= harbor.tools.thaidevops.co
 DOCKER_IMAGE ?= $(DOCKER_REGISTRY)/pertisksoft/pertisk-kube/web
-DOCKER_TAG ?= $(VERSION)
+IMAGE_TAG ?=
+DOCKER_TAG ?= $(if $(IMAGE_TAG),$(IMAGE_TAG),$(VERSION))
+BUILD_VERSION ?= $(DOCKER_TAG)
 BASE_IMAGE_PREFIX ?= $(DOCKER_REGISTRY)/pertisksoft/pertisk-kube/web-base
 BASE_TAG ?= latest
 HELM_RELEASE ?= pertisk-kube
@@ -149,20 +151,20 @@ docker-base-push-multi:
 # ── Application image targets (fast — only recompiles changed code) ───────────
 docker-build:
 	docker build -f Dockerfile \
-		--build-arg VERSION=$(VERSION) \
+		--build-arg VERSION=$(BUILD_VERSION) \
 		--build-arg BASE_TAG=$(BASE_TAG) \
 		-t $(DOCKER_IMAGE):$(DOCKER_TAG) .
 	@echo "Built: $(DOCKER_IMAGE):$(DOCKER_TAG)"
 
 docker-build-amd64:
 	docker buildx build --platform linux/amd64 -f Dockerfile \
-		--build-arg VERSION=$(VERSION) --build-arg BASE_TAG=$(BASE_TAG) \
+		--build-arg VERSION=$(BUILD_VERSION) --build-arg BASE_TAG=$(BASE_TAG) \
 		--load -t $(DOCKER_IMAGE):$(DOCKER_TAG)-amd64 -t $(DOCKER_IMAGE):amd64 .
 	@echo "Built: $(DOCKER_IMAGE):$(DOCKER_TAG)-amd64"
 
 docker-build-arm64:
 	docker buildx build --platform linux/arm64 -f Dockerfile \
-		--build-arg VERSION=$(VERSION) --build-arg BASE_TAG=$(BASE_TAG) \
+		--build-arg VERSION=$(BUILD_VERSION) --build-arg BASE_TAG=$(BASE_TAG) \
 		--load -t $(DOCKER_IMAGE):$(DOCKER_TAG)-arm64 -t $(DOCKER_IMAGE):arm64 .
 	@echo "Built: $(DOCKER_IMAGE):$(DOCKER_TAG)-arm64"
 
@@ -178,7 +180,8 @@ docker-build-multi:
 	docker buildx inspect multiarch --bootstrap > /dev/null; \
 	echo "Using builder: multiarch"; \
 	docker buildx build --platform linux/amd64,linux/arm64 -f Dockerfile \
-		--build-arg VERSION=$(VERSION) --build-arg BASE_TAG=$(BASE_TAG) --push \
+		--provenance=false --sbom=false \
+		--build-arg VERSION=$(BUILD_VERSION) --build-arg BASE_TAG=$(BASE_TAG) --push \
 		-t $(DOCKER_IMAGE):$(DOCKER_TAG) \
 		-t $(DOCKER_IMAGE):latest .; \
 	echo "✓ Built and pushed multi-arch: $(DOCKER_IMAGE):$(DOCKER_TAG)"
