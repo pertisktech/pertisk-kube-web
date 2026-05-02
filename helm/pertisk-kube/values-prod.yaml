@@ -23,6 +23,7 @@ app:
     targetPort: 8091
   env:
     rustLog: info
+    backupExternalCrdEnabled: "true"
   auth:
     username: admin
     password: admin

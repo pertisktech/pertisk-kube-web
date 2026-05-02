@@ -27,6 +27,7 @@ app:
     grpcTargetPort: 50051
   env:
     rustLog: info
+    backupExternalCrdEnabled: "true"
   auth:
     username: admin
     password: admin
@@ -165,6 +166,10 @@ rbac:
           "serviceaccounts",
         ]
       verbs: ["update", "patch", "delete"]
+    # Core resources - create (needed for first-time backup settings/credentials apply)
+    - apiGroups: [""]
+      resources: ["configmaps", "secrets"]
+      verbs: ["create"]
     # Pods - full manage + log
     - apiGroups: [""]
       resources: ["pods", "pods/log"]

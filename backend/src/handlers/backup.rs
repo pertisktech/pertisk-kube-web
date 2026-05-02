@@ -238,6 +238,16 @@ fn is_missing_backup_api_error(error_text: &str) -> bool {
         || error_text.contains("404 Not Found")
 }
 
+fn external_backup_crd_enabled() -> bool {
+    match std::env::var("BACKUP_EXTERNAL_CRD_ENABLED") {
+        Ok(raw) => {
+            let normalized = raw.trim().to_ascii_lowercase();
+            !(normalized == "0" || normalized == "false" || normalized == "no" || normalized == "off")
+        }
+        Err(_) => true,
+    }
+}
+
 fn default_timezone() -> String {
     "Asia/Bangkok".to_string()
 }
@@ -1710,20 +1720,29 @@ async fn delete_backup_runs_by_names(
     let settings = load_settings(client.clone()).await;
     let mut warnings: Vec<String> = vec![];
     let runtime_namespace = SETTINGS_NAMESPACE;
-    let backups_api: Api<DynamicObject> =
-        Api::namespaced_with(client.clone(), runtime_namespace, &backup_crd_resource("Backup"));
+    let backups_api: Option<Api<DynamicObject>> = if external_backup_crd_enabled() {
+        Some(Api::namespaced_with(
+            client.clone(),
+            runtime_namespace,
+            &backup_crd_resource("Backup"),
+        ))
+    } else {
+        None
+    };
 
     for backup_name in &requested {
         // Try to delete live Velero Backup CR as well so overview doesn't re-hydrate the row.
-        match backups_api.delete(backup_name, &DeleteParams::default()).await {
-            Ok(_) => {}
-            Err(e) => {
-                let err_text = e.to_string();
-                // Ignore expected "not found" and clusters without Backup CRD/API.
-                let expected_missing = err_text.contains("404")
-                    || err_text.to_lowercase().contains("not found");
-                if !expected_missing {
-                    warnings.push(format!("{}: backup CR delete failed: {}", backup_name, err_text));
+        if let Some(api) = &backups_api {
+            match api.delete(backup_name, &DeleteParams::default()).await {
+                Ok(_) => {}
+                Err(e) => {
+                    let err_text = e.to_string();
+                    // Ignore expected "not found" and clusters without Backup CRD/API.
+                    let expected_missing = err_text.contains("404")
+                        || err_text.to_lowercase().contains("not found");
+                    if !expected_missing {
+                        warnings.push(format!("{}: backup CR delete failed: {}", backup_name, err_text));
+                    }
                 }
             }
         }
@@ -2066,6 +2085,13 @@ async fn apply_s3_and_schedule(client: kube::Client, settings: &BackupSettings) 
         .await
         .map_err(|e| format!("Failed to apply secret: {}", e))?;
 
+    if !external_backup_crd_enabled() {
+        return Ok(
+            "Backup config applied in internal mode. Settings and credentials were stored in pertisk-backups; external backup CRDs are disabled."
+                .to_string(),
+        );
+    }
+
     let mut bsl_config = serde_json::Map::new();
     bsl_config.insert("region".to_string(), Value::String(settings.s3_region.clone()));
     bsl_config.insert(
@@ -2257,9 +2283,6 @@ pub async fn run_manual_backup(
     Json(req): Json<ManualBackupRequest>,
 ) -> impl IntoResponse {
     let settings = load_settings(state.client.clone()).await;
-    let runtime_namespace = SETTINGS_NAMESPACE;
-    let backups_api: Api<DynamicObject> =
-        Api::namespaced_with(state.client.clone(), runtime_namespace, &backup_crd_resource("Backup"));
 
     let backup_name = req.name.unwrap_or_else(|| {
         format!(
@@ -2270,6 +2293,87 @@ pub async fn run_manual_backup(
 
     let included_namespaces = req.include_namespaces.unwrap_or_default();
     let excluded_namespaces = req.exclude_namespaces.unwrap_or_default();
+
+    if !external_backup_crd_enabled() {
+        let now = Utc::now().to_rfc3339();
+        let schedule = StoredSchedule {
+            name: "manual".to_string(),
+            cron: String::new(),
+            timezone: default_timezone(),
+            paused: false,
+            include_namespaces: included_namespaces.clone(),
+            exclude_namespaces: excluded_namespaces.clone(),
+            updated_at: now.clone(),
+            last_run_at: Some(now.clone()),
+        };
+
+        let upload_result = upload_backup_run_to_s3(
+            state.client.clone(),
+            &settings,
+            &schedule,
+            &backup_name,
+            &now,
+        )
+        .await;
+        let phase = if upload_result.is_ok() { "Completed" } else { "Failed" };
+        let upload_meta = upload_result.as_ref().ok();
+        let object_key = upload_meta
+            .map(|(key, _, _, _)| key.clone())
+            .unwrap_or_default();
+        let resource_summary = upload_meta
+            .map(|(_, summary, _, _)| summary.clone())
+            .unwrap_or_else(|| build_resource_summary(&included_namespaces, &excluded_namespaces));
+        let kind_summary = upload_meta
+            .map(|(_, _, summary, _)| summary.clone())
+            .unwrap_or_default();
+        let size_bytes = upload_meta.map(|(_, _, _, size)| *size);
+
+        let mut runs = load_stored_backup_runs(state.client.clone()).await;
+        runs.push(StoredBackupRun {
+            name: backup_name.clone(),
+            schedule_name: "manual".to_string(),
+            phase: phase.to_string(),
+            storage_location: settings.storage_location_name.clone(),
+            created_at: now,
+            manual: true,
+            object_key,
+            size_bytes,
+            include_namespaces: included_namespaces,
+            exclude_namespaces: excluded_namespaces,
+            resource_summary,
+            kind_summary,
+        });
+
+        if runs.len() > 500 {
+            let keep_from = runs.len() - 500;
+            runs = runs.split_off(keep_from);
+        }
+
+        if let Err(e) = persist_stored_backup_runs(state.client.clone(), &runs).await {
+            return (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(json!({"success": false, "message": format!("Failed to persist manual backup record: {}", e)})),
+            )
+                .into_response();
+        }
+
+        return match upload_result {
+            Ok(_) => (
+                StatusCode::OK,
+                Json(json!({"success": true, "name": backup_name, "message": "Manual backup completed in internal mode"})),
+            )
+                .into_response(),
+            Err(e) => (
+                StatusCode::BAD_REQUEST,
+                Json(json!({"success": false, "name": backup_name, "message": format!("Manual backup failed in internal mode: {}", e)})),
+            )
+                .into_response(),
+        };
+    }
+
+    let runtime_namespace = SETTINGS_NAMESPACE;
+    let backups_api: Api<DynamicObject> =
+        Api::namespaced_with(state.client.clone(), runtime_namespace, &backup_crd_resource("Backup"));
 
     let backup = json!({
         "apiVersion": "velero.io/v1",
@@ -2333,6 +2437,53 @@ pub async fn run_restore(
 
     let include_namespaces = req.include_namespaces.unwrap_or_default();
     let exclude_namespaces = req.exclude_namespaces.unwrap_or_default();
+
+    if !external_backup_crd_enabled() {
+        let settings = load_settings(state.client.clone()).await;
+        return match restore_from_s3_snapshot(
+            state.client.clone(),
+            &settings,
+            &req.backup_name,
+            &include_namespaces,
+            &exclude_namespaces,
+        )
+        .await
+        {
+            Ok((applied, skipped, warnings)) => {
+                let message = if warnings.is_empty() {
+                    format!(
+                        "Restore completed from snapshot in internal mode. Applied {} resource(s), skipped {}.",
+                        applied, skipped
+                    )
+                } else {
+                    format!(
+                        "Restore completed with warnings in internal mode. Applied {} resource(s), skipped {}.",
+                        applied, skipped
+                    )
+                };
+
+                (
+                    StatusCode::OK,
+                    Json(json!({
+                        "success": true,
+                        "name": restore_name,
+                        "message": message,
+                        "warnings": warnings,
+                        "mode": "internal-snapshot"
+                    })),
+                )
+                    .into_response()
+            }
+            Err(e) => (
+                StatusCode::BAD_REQUEST,
+                Json(json!({
+                    "success": false,
+                    "message": format!("Restore failed in internal mode: {}", e)
+                })),
+            )
+                .into_response(),
+        };
+    }
 
     let restore = json!({
         "apiVersion": "velero.io/v1",
@@ -2754,95 +2905,97 @@ pub async fn get_backup_overview(State(state): State<AppState>) -> impl IntoResp
         .map(|record| (record.name.clone(), record))
         .collect();
 
-    // Also pull live Velero Backup CRs so list is available when switching clusters.
-    // If the API returns 404, back off for a short cooldown to avoid repeated noisy kube-client warnings.
-    let now_epoch = Utc::now().timestamp();
-    let retry_at = BACKUP_API_RETRY_AT_EPOCH_SECONDS.load(Ordering::Relaxed);
-    if now_epoch >= retry_at {
-        let runtime_namespace = SETTINGS_NAMESPACE;
-        let backups_api: Api<DynamicObject> =
-            Api::namespaced_with(state.client.clone(), runtime_namespace, &backup_crd_resource("Backup"));
+    if external_backup_crd_enabled() {
+        // Also pull live Velero Backup CRs so list is available when switching clusters.
+        // If the API returns 404, back off for a short cooldown to avoid repeated noisy kube-client warnings.
+        let now_epoch = Utc::now().timestamp();
+        let retry_at = BACKUP_API_RETRY_AT_EPOCH_SECONDS.load(Ordering::Relaxed);
+        if now_epoch >= retry_at {
+            let runtime_namespace = SETTINGS_NAMESPACE;
+            let backups_api: Api<DynamicObject> =
+                Api::namespaced_with(state.client.clone(), runtime_namespace, &backup_crd_resource("Backup"));
 
-        match backups_api.list(&ListParams::default()).await {
-            Ok(list) => {
-                BACKUP_API_RETRY_AT_EPOCH_SECONDS.store(0, Ordering::Relaxed);
-                for backup in list.items {
-                    let name = backup.metadata.name.clone().unwrap_or_default();
-                    if name.is_empty() {
-                        continue;
-                    }
+            match backups_api.list(&ListParams::default()).await {
+                Ok(list) => {
+                    BACKUP_API_RETRY_AT_EPOCH_SECONDS.store(0, Ordering::Relaxed);
+                    for backup in list.items {
+                        let name = backup.metadata.name.clone().unwrap_or_default();
+                        if name.is_empty() {
+                            continue;
+                        }
 
-                    let include_namespaces: Vec<String> = backup
-                        .data
-                        .get("spec")
-                        .and_then(|v| v.get("includedNamespaces"))
-                        .and_then(|v| v.as_array())
-                        .map(|arr| {
-                            arr.iter()
-                                .filter_map(|item| item.as_str().map(ToString::to_string))
-                                .collect()
-                        })
-                        .unwrap_or_default();
-
-                    let exclude_namespaces: Vec<String> = backup
-                        .data
-                        .get("spec")
-                        .and_then(|v| v.get("excludedNamespaces"))
-                        .and_then(|v| v.as_array())
-                        .map(|arr| {
-                            arr.iter()
-                                .filter_map(|item| item.as_str().map(ToString::to_string))
-                                .collect()
-                        })
-                        .unwrap_or_default();
-
-                    let resource_summary = build_resource_summary(&include_namespaces, &exclude_namespaces);
-
-                    let live_record = BackupRecord {
-                        name: name.clone(),
-                        phase: backup
-                            .data
-                            .get("status")
-                            .and_then(|v| v.get("phase"))
-                            .and_then(|v| v.as_str())
-                            .unwrap_or("Unknown")
-                            .to_string(),
-                        storage_location: backup
+                        let include_namespaces: Vec<String> = backup
                             .data
                             .get("spec")
-                            .and_then(|v| v.get("storageLocation"))
-                            .and_then(|v| v.as_str())
-                            .unwrap_or_default()
-                            .to_string(),
-                        created_at: backup
-                            .metadata
-                            .creation_timestamp
-                            .as_ref()
-                            .map(|ts| ts.0.to_rfc3339())
-                            .unwrap_or_default(),
-                        size_bytes: extract_backup_size_bytes(&backup)
-                            .or_else(|| merged_backups.get(&name).and_then(|record| record.size_bytes)),
-                        include_namespaces,
-                        exclude_namespaces,
-                        kind_summary: fallback_kind_summary_from_resource_summary(&resource_summary),
-                        resource_summary,
-                    };
+                            .and_then(|v| v.get("includedNamespaces"))
+                            .and_then(|v| v.as_array())
+                            .map(|arr| {
+                                arr.iter()
+                                    .filter_map(|item| item.as_str().map(ToString::to_string))
+                                    .collect()
+                            })
+                            .unwrap_or_default();
 
-                    // Prefer live CR data when both stored and live entries exist.
-                    merged_backups.insert(name, live_record);
+                        let exclude_namespaces: Vec<String> = backup
+                            .data
+                            .get("spec")
+                            .and_then(|v| v.get("excludedNamespaces"))
+                            .and_then(|v| v.as_array())
+                            .map(|arr| {
+                                arr.iter()
+                                    .filter_map(|item| item.as_str().map(ToString::to_string))
+                                    .collect()
+                            })
+                            .unwrap_or_default();
+
+                        let resource_summary = build_resource_summary(&include_namespaces, &exclude_namespaces);
+
+                        let live_record = BackupRecord {
+                            name: name.clone(),
+                            phase: backup
+                                .data
+                                .get("status")
+                                .and_then(|v| v.get("phase"))
+                                .and_then(|v| v.as_str())
+                                .unwrap_or("Unknown")
+                                .to_string(),
+                            storage_location: backup
+                                .data
+                                .get("spec")
+                                .and_then(|v| v.get("storageLocation"))
+                                .and_then(|v| v.as_str())
+                                .unwrap_or_default()
+                                .to_string(),
+                            created_at: backup
+                                .metadata
+                                .creation_timestamp
+                                .as_ref()
+                                .map(|ts| ts.0.to_rfc3339())
+                                .unwrap_or_default(),
+                            size_bytes: extract_backup_size_bytes(&backup)
+                                .or_else(|| merged_backups.get(&name).and_then(|record| record.size_bytes)),
+                            include_namespaces,
+                            exclude_namespaces,
+                            kind_summary: fallback_kind_summary_from_resource_summary(&resource_summary),
+                            resource_summary,
+                        };
+
+                        // Prefer live CR data when both stored and live entries exist.
+                        merged_backups.insert(name, live_record);
+                    }
                 }
-            }
-            Err(e) => {
-                let err_text = e.to_string();
-                if err_text.contains("404") {
-                    let next_retry = now_epoch + BACKUP_API_RETRY_COOLDOWN_SECONDS;
-                    BACKUP_API_RETRY_AT_EPOCH_SECONDS.store(next_retry, Ordering::Relaxed);
-                    debug!(
-                        "Backup CR list endpoint unavailable (404). Skipping re-probe for {}s.",
-                        BACKUP_API_RETRY_COOLDOWN_SECONDS
-                    );
-                } else {
-                    info!("Backup CR list not available for overview: {}", err_text);
+                Err(e) => {
+                    let err_text = e.to_string();
+                    if err_text.contains("404") {
+                        let next_retry = now_epoch + BACKUP_API_RETRY_COOLDOWN_SECONDS;
+                        BACKUP_API_RETRY_AT_EPOCH_SECONDS.store(next_retry, Ordering::Relaxed);
+                        debug!(
+                            "Backup CR list endpoint unavailable (404). Skipping re-probe for {}s.",
+                            BACKUP_API_RETRY_COOLDOWN_SECONDS
+                        );
+                    } else {
+                        info!("Backup CR list not available for overview: {}", err_text);
+                    }
                 }
             }
         }

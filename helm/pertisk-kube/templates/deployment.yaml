@@ -61,6 +61,8 @@ spec:
               value: "/app/static"
             - name: RUST_LOG
               value: {{ .Values.app.env.rustLog | default "info" }}
+            - name: BACKUP_EXTERNAL_CRD_ENABLED
+              value: {{ .Values.app.env.backupExternalCrdEnabled | default "true" | quote }}
             - name: USERNAME
               valueFrom:
                 secretKeyRef:
