@@ -494,7 +494,10 @@ export const Layout = ({ username, onLogout }: LayoutProps) => {
                     alt=""
                     className="h-8 w-8 shrink-0"
                   />
-                  <h1 className="truncate text-[1.05rem] font-[650] tracking-[-0.02em] text-text">PTKublet</h1>
+                  <div className="flex items-baseline gap-1.5 min-w-0">
+                    <h1 className="truncate text-[1.05rem] font-[650] tracking-[-0.02em] text-text">PTKublet</h1>
+                    <span className="text-[0.8rem] font-medium text-text-secondary tracking-wide shrink-0">v{import.meta.env.VITE_APP_VERSION}</span>
+                  </div>
                 </Link>
               </>
             )}
