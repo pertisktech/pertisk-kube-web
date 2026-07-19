@@ -923,6 +923,27 @@ export const deleteJob = (namespace: string, name: string) =>
 export const deleteCronJob = (namespace: string, name: string) =>
   apiDelete(`/cronjobs/${encodeURIComponent(namespace)}/${encodeURIComponent(name)}`);
 
+export const runCronJobNow = async (
+  namespace: string,
+  name: string,
+): Promise<{ name: string; namespace: string }> => {
+  const token = getAuthToken();
+  const res = await fetch(
+    `${API_BASE}/cronjobs/${encodeURIComponent(namespace)}/${encodeURIComponent(name)}/run`,
+    {
+      method: 'POST',
+      headers: token ? { Authorization: token } : undefined,
+    },
+  );
+
+  const payload = await res.json().catch(() => ({}));
+  if (!res.ok) {
+    throw new Error(payload?.message || `Failed to run CronJob (${res.status})`);
+  }
+
+  return payload.data as { name: string; namespace: string };
+};
+
 export const deleteNamespace = (name: string) =>
   apiDelete(`/namespaces/${encodeURIComponent(name)}`);
 

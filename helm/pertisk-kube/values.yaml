@@ -14,7 +14,7 @@ app:
   name: pertisk-kube
   replicaCount: 3
   image:
-    registry: harbor.tools.thaidevops.co
+    registry: harbor.tools.pertisk.com
     repository: pertisksoft/pertisk-kube/web
     tag: "v0.0.4"
     pullPolicy: Always
@@ -25,6 +25,9 @@ app:
     targetPort: 8091
     grpcPort: 50051
     grpcTargetPort: 50051
+    # Keep WebSocket / exec / log streams on the same pod across reconnects.
+    sessionAffinity: ClientIP
+    sessionAffinityTimeoutSeconds: 10800
   env:
     rustLog: info
     backupExternalCrdEnabled: "true"
@@ -103,17 +106,17 @@ app:
 # Ingress configuration
 ingress:
   enabled: true
-  className: "pertisk-rproxy"
+  className: "pertisk-proxy"
   annotations: {}
   hosts:
-    - host: dashboard.talos.thaidevops.co
+    - host: dashboard.talos.pertisk.com
       paths:
         - path: /
           pathType: Prefix
   tls:
     - secretName: admin-talos-tls
       hosts:
-        - dashboard.talos.thaidevops.co
+        - dashboard.talos.pertisk.com
 
 ingressGrpc:
   enabled: false
@@ -211,7 +214,7 @@ rbac:
     # Batch
     - apiGroups: ["batch"]
       resources: ["jobs", "cronjobs"]
-      verbs: ["get", "list", "watch", "update", "patch", "delete"]
+      verbs: ["get", "list", "watch", "create", "update", "patch", "delete"]
     # Networking - full manage
     - apiGroups: ["networking.k8s.io"]
       resources: ["ingresses", "networkpolicies", "ingressclasses"]

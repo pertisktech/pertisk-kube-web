@@ -8,6 +8,13 @@ metadata:
     app: {{ .Values.app.name }}
 spec:
   type: {{ .Values.app.service.type }}
+  # Sticky sessions keep long-lived WebSocket / exec / log streams on one pod.
+  sessionAffinity: {{ .Values.app.service.sessionAffinity | default "ClientIP" }}
+  {{- if eq (.Values.app.service.sessionAffinity | default "ClientIP") "ClientIP" }}
+  sessionAffinityConfig:
+    clientIP:
+      timeoutSeconds: {{ .Values.app.service.sessionAffinityTimeoutSeconds | default 10800 }}
+  {{- end }}
   selector:
     app: {{ .Values.app.name }}
   ports:

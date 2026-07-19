@@ -1,5 +1,6 @@
 import { useEffect, useMemo, useState } from 'react';
 import YAML from 'yaml';
+import { toast } from 'sonner';
 import { Trash2 } from '../components/Icons';
 import { useRealtimeCronJobs } from '../hooks/useRealtimeResources';
 import { useNamespace } from '../context/NamespaceContext';
@@ -7,7 +8,7 @@ import { CronJobDetailPanel, DataTable, ConfirmDialog } from '../components';
 import type { CronJob } from '../types';
 import { getAuthToken } from '../utils/auth';
 import { timeAgo, timeFromNow, matchesResourceNameFilter } from '../utils';
-import { deleteCronJob } from '../hooks/useKubernetes';
+import { deleteCronJob, runCronJobNow } from '../hooks/useKubernetes';
 import { openPanelTab } from '../components/BottomPanel';
 
 type CronJobSortKey =
@@ -62,6 +63,7 @@ export const CronJobsPage = () => {
   const [selectedRows, setSelectedRows] = useState<string[]>([]);
   const [confirmDelete, setConfirmDelete] = useState<{ keys: string[]; label: string } | null>(null);
   const [isDeleting, setIsDeleting] = useState(false);
+  const [runningCronJobKey, setRunningCronJobKey] = useState<string | null>(null);
   const [sortState, setSortState] = useState<{ key: CronJobSortKey; direction: 'asc' | 'desc' }>({
     key: 'age',
     direction: 'desc',
@@ -104,6 +106,19 @@ export const CronJobsPage = () => {
   const handleDeleteSingle = async (namespace: string, name: string) => {
     setConfirmDelete({ keys: [`${namespace}/${name}`], label: name });
     setPanelOpen(false);
+  };
+
+  const handleRunNow = async (namespace: string, name: string) => {
+    const key = `${namespace}/${name}`;
+    setRunningCronJobKey(key);
+    try {
+      const job = await runCronJobNow(namespace, name);
+      toast.success(`Started Job ${job.name}`);
+    } catch (runError) {
+      toast.error(runError instanceof Error ? runError.message : 'Failed to run CronJob');
+    } finally {
+      setRunningCronJobKey(null);
+    }
   };
 
   const handleDeleteSelected = () => {
@@ -291,6 +306,8 @@ export const CronJobsPage = () => {
             cronJob={selectedCronJob}
             onClose={() => setPanelOpen(false)}
             onOpenYamlEditor={handleOpenYamlEditorFromPanel}
+            onRunNow={handleRunNow}
+            isRunning={runningCronJobKey === `${selectedCronJob.namespace}/${selectedCronJob.name}`}
             onDelete={handleDeleteSingle}
           />
         </>

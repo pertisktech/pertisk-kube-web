@@ -1,4 +1,4 @@
-import { Pencil, Trash2 } from './Icons';
+import { Pencil, Play, Trash2 } from './Icons';
 import type { CronJob } from '../types';
 import { timeAgo, timeFromNow } from '../utils';
 import { ResourceDetailPanelLayout, PanelActionButton } from './ResourceDetailPanelLayout';
@@ -8,10 +8,19 @@ interface CronJobDetailPanelProps {
   cronJob: CronJob;
   onClose: () => void;
   onOpenYamlEditor?: (cronJob: CronJob) => void;
+  onRunNow?: (namespace: string, name: string) => Promise<void>;
+  isRunning?: boolean;
   onDelete?: (namespace: string, name: string) => Promise<void>;
 }
 
-export const CronJobDetailPanel = ({ cronJob, onClose, onOpenYamlEditor, onDelete }: CronJobDetailPanelProps) => (
+export const CronJobDetailPanel = ({
+  cronJob,
+  onClose,
+  onOpenYamlEditor,
+  onRunNow,
+  isRunning = false,
+  onDelete,
+}: CronJobDetailPanelProps) => (
   <ResourceDetailPanelLayout
     title={cronJob.name}
     keyInfo={[
@@ -21,6 +30,12 @@ export const CronJobDetailPanel = ({ cronJob, onClose, onOpenYamlEditor, onDelet
     ]}
     actions={
       <>
+        <PanelActionButton
+          icon={Play}
+          label={isRunning ? 'Starting...' : 'Run Now'}
+          onClick={() => onRunNow?.(cronJob.namespace, cronJob.name)}
+          disabled={isRunning}
+        />
         <PanelActionButton icon={Pencil} label="Edit YAML" onClick={() => onOpenYamlEditor?.(cronJob)} />
         <PanelActionButton icon={Trash2} label="Delete" danger onClick={() => onDelete?.(cronJob.namespace, cronJob.name)} />
       </>

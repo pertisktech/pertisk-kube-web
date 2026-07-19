@@ -854,19 +854,20 @@ export const useRealtimePods = <T>(options: UseRealtimePodsOptions = {}) => {
         }
       };
 
-      ws.onerror = (errorEvent) => {
+      ws.onerror = () => {
         if (intentionalCloseRef.current) {
           return;
         }
-        if (import.meta.env.DEV && ws.readyState !== WebSocket.OPEN) {
+        // Browsers always emit error before close on failed handshakes; avoid noisy Event dumps.
+        if (ws.readyState !== WebSocket.OPEN) {
           if (isRealtimeDebug()) {
-            console.log('[useRealtimePods] Ignoring pre-open websocket error during dev remount');
+            console.warn('[useRealtimePods] WebSocket connect failed (will reconnect)');
           }
           return;
         }
-        console.error('[useRealtimePods] WebSocket error:', errorEvent);
-        // Don't set error here — onclose fires immediately after and handles reconnection.
-        // Only surface an error if reconnection is exhausted (handled in onclose).
+        if (isRealtimeDebug()) {
+          console.warn('[useRealtimePods] WebSocket error');
+        }
       };
 
       ws.onclose = () => {

@@ -8,7 +8,7 @@ use serde::Deserialize;
 use chrono::Utc;
 use cron::Schedule;
 use kube::{
-    api::{DeleteParams, ListParams, Patch, PatchParams},
+    api::{DeleteParams, ListParams, Patch, PatchParams, PostParams},
     core::{ApiResource, DynamicObject, GroupVersionKind},
     Api,
 };
@@ -1832,6 +1832,112 @@ pub async fn update_cronjob_yaml(
                 Json(serde_json::json!({
                     "success": false,
                     "message": format!("Failed to update cronjob: {}", err),
+                })),
+            )
+                .into_response()
+        }
+    }
+}
+
+pub async fn run_cronjob_now(
+    Path((namespace, name)): Path<(String, String)>,
+    State(state): State<AppState>,
+) -> impl IntoResponse {
+    use k8s_openapi::api::batch::v1::{CronJob, Job};
+
+    let cronjobs: Api<CronJob> = Api::namespaced(state.client.clone(), &namespace);
+    let cronjob = match cronjobs.get(&name).await {
+        Ok(cronjob) => cronjob,
+        Err(kube::Error::Api(err)) if err.code == 404 => {
+            return (
+                StatusCode::NOT_FOUND,
+                Json(serde_json::json!({
+                    "success": false,
+                    "message": format!("CronJob {}/{} was not found", namespace, name),
+                })),
+            )
+                .into_response();
+        }
+        Err(err) => {
+            error!("Error loading cronjob {}/{} for manual run: {:?}", namespace, name, err);
+            return (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(serde_json::json!({
+                    "success": false,
+                    "message": format!("Failed to load CronJob: {}", err),
+                })),
+            )
+                .into_response();
+        }
+    };
+
+    let cronjob_spec = match cronjob.spec.as_ref() {
+        Some(spec) => spec,
+        None => {
+            return (
+                StatusCode::UNPROCESSABLE_ENTITY,
+                Json(serde_json::json!({
+                    "success": false,
+                    "message": "CronJob has no spec",
+                })),
+            )
+                .into_response();
+        }
+    };
+
+    let mut metadata = cronjob_spec
+        .job_template
+        .metadata
+        .clone()
+        .unwrap_or_default();
+    metadata.name = None;
+    metadata.namespace = Some(namespace.clone());
+    metadata.generate_name = Some(format!("{}-manual-", name));
+    metadata
+        .annotations
+        .get_or_insert_with(Default::default)
+        .insert(
+            "cronjob.kubernetes.io/instantiate".to_string(),
+            "manual".to_string(),
+        );
+
+    let job = Job {
+        metadata,
+        spec: cronjob_spec.job_template.spec.clone(),
+        status: None,
+    };
+    let jobs: Api<Job> = Api::namespaced(state.client, &namespace);
+
+    match jobs.create(&PostParams::default(), &job).await {
+        Ok(created) => {
+            let job_name = created.metadata.name.unwrap_or_default();
+            info!(
+                "Created manual job {} from cronjob {}/{}",
+                job_name, namespace, name
+            );
+            (
+                StatusCode::CREATED,
+                Json(serde_json::json!({
+                    "success": true,
+                    "message": format!("Manual Job {} started", job_name),
+                    "data": {
+                        "name": job_name,
+                        "namespace": namespace,
+                    }
+                })),
+            )
+                .into_response()
+        }
+        Err(err) => {
+            error!(
+                "Error creating manual job from cronjob {}/{}: {:?}",
+                namespace, name, err
+            );
+            (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(serde_json::json!({
+                    "success": false,
+                    "message": format!("Failed to start CronJob: {}", err),
                 })),
             )
                 .into_response()
