@@ -2,6 +2,12 @@ import { useEffect, useState } from 'react';
 import CronExpressionParser from 'cron-parser';
 import { sortNodeRoles } from '../utils/nodeRoles';
 import {
+  applyIngressControllerAddresses,
+  refreshIngressClassAddressMap,
+  resolveIngressAddressForClass,
+} from '../utils/ingress';
+import { getAuthToken } from '../utils/auth';
+import {
   Namespace,
   Deployment,
   StatefulSet,
@@ -37,6 +43,7 @@ import {
   Vwc,
   CustomResource,
   Crd,
+  HelmRelease,
 } from '../types';
 
 interface WebSocketMessage {
@@ -47,15 +54,343 @@ interface WebSocketMessage {
   message?: string;
 }
 
+/** Re-fetch realtime resource snapshots (helm releases, pods, etc.). */
+export const dispatchResourcesRefresh = () => {
+  window.dispatchEvent(new CustomEvent('resources:refresh'));
+};
+
 /** Show WebSocket debug logs in Vite dev or when running on localhost (e.g. local run with built app). */
 const isRealtimeDebug = (): boolean =>
   typeof window !== 'undefined' &&
   (import.meta.env.DEV || window.location.hostname === 'localhost' || window.location.hostname === '127.0.0.1');
 
+const shouldIgnoreRealtimeError = (message?: string): boolean => {
+  if (!message) return false;
+  const normalized = message.toLowerCase();
+  return normalized.includes('watch stream failed') && normalized.includes('forbidden');
+};
+
+const isTransientK8sListError = (message?: string): boolean => {
+  if (!message) return false;
+  const normalized = message.toLowerCase();
+  return normalized.includes('toomanyrequests')
+    || normalized.includes('storage is (re)initializing')
+    || normalized.includes('code: 429')
+    || normalized.includes('temporarily unavailable');
+};
+
+const isTransientRealtimeConnectivityError = (message?: string): boolean => {
+  if (!message) return false;
+  if (isTransientK8sListError(message)) return true;
+  const normalized = message.toLowerCase();
+  return normalized.includes('client error (connect)')
+    || normalized.includes('connecterror')
+    || normalized.includes('network is unreachable')
+    || normalized.includes('timedout')
+    || normalized.includes('timed out')
+    || normalized.includes('failed to fetch initial')
+    || normalized.includes('load failed')
+    || normalized.includes('failed to fetch')
+    || normalized.includes('could not connect')
+    || normalized.includes('networkerror')
+    || normalized.includes('network request failed');
+};
+
+export const isFetchConnectionError = (error: unknown): boolean => {
+  if (error instanceof TypeError) {
+    return isTransientRealtimeConnectivityError(error.message);
+  }
+  if (error instanceof Error) {
+    return isTransientRealtimeConnectivityError(error.message);
+  }
+  if (typeof error === 'string') {
+    return isTransientRealtimeConnectivityError(error);
+  }
+  return false;
+};
+
+type RealtimeMessageListener = (message: WebSocketMessage) => void;
+
+const realtimeResourceListeners = new Map<string, Set<RealtimeMessageListener>>();
+let realtimeSharedSocket: WebSocket | null = null;
+let realtimeSharedReconnectTimer: ReturnType<typeof setTimeout> | null = null;
+let realtimeSharedHeartbeatTimer: ReturnType<typeof setInterval> | null = null;
+let realtimeSharedStaleWatchdogTimer: ReturnType<typeof setInterval> | null = null;
+let realtimeSharedLastMessageAt = Date.now();
+let realtimeSharedReconnectAttempts = 0;
+let realtimeSharedClosingIntentional = false;
+let realtimeSharedConnectInFlight = false;
+
+const getRealtimeWsUrl = (): string => (
+  `${window.location.protocol === 'https:' ? 'wss' : 'ws'}://${window.location.host}/ws`
+);
+
+const clearRealtimeSharedTimers = () => {
+  if (realtimeSharedReconnectTimer) {
+    clearTimeout(realtimeSharedReconnectTimer);
+    realtimeSharedReconnectTimer = null;
+  }
+  if (realtimeSharedHeartbeatTimer) {
+    clearInterval(realtimeSharedHeartbeatTimer);
+    realtimeSharedHeartbeatTimer = null;
+  }
+  if (realtimeSharedStaleWatchdogTimer) {
+    clearInterval(realtimeSharedStaleWatchdogTimer);
+    realtimeSharedStaleWatchdogTimer = null;
+  }
+};
+
+const safeCloseRealtimeSocket = (socket: WebSocket) => {
+  if (socket.readyState === WebSocket.CONNECTING) {
+    socket.onmessage = null;
+    socket.onerror = null;
+    socket.onclose = null;
+    socket.onopen = () => {
+      socket.close();
+    };
+    return;
+  }
+
+  if (socket.readyState === WebSocket.OPEN || socket.readyState === WebSocket.CLOSING) {
+    socket.close();
+  }
+};
+
+const dispatchRealtimeMessage = (message: WebSocketMessage) => {
+  if (message.resource) {
+    const listeners = realtimeResourceListeners.get(message.resource);
+    if (listeners) {
+      listeners.forEach((listener) => {
+        listener(message);
+      });
+    }
+    return;
+  }
+
+  if (message.type === 'error') {
+    realtimeResourceListeners.forEach((listeners) => {
+      listeners.forEach((listener) => listener(message));
+    });
+  }
+};
+
+const openRealtimeSharedSocket = () => {
+  if (realtimeSharedSocket && (
+    realtimeSharedSocket.readyState === WebSocket.OPEN
+    || realtimeSharedSocket.readyState === WebSocket.CONNECTING
+  )) {
+    return;
+  }
+
+  if (realtimeSharedConnectInFlight) {
+    return;
+  }
+
+  if (realtimeResourceListeners.size === 0) {
+    return;
+  }
+
+  realtimeSharedConnectInFlight = true;
+
+  try {
+    const socket = new WebSocket(getRealtimeWsUrl());
+    realtimeSharedSocket = socket;
+
+    socket.onopen = () => {
+      realtimeSharedConnectInFlight = false;
+
+      if (realtimeSharedClosingIntentional) {
+        socket.close();
+        return;
+      }
+
+      realtimeSharedReconnectAttempts = 0;
+      realtimeSharedLastMessageAt = Date.now();
+
+      if (isRealtimeDebug()) {
+        console.log('Realtime shared websocket connected');
+      }
+
+      clearRealtimeSharedTimers();
+
+      realtimeSharedHeartbeatTimer = setInterval(() => {
+        if (socket.readyState === WebSocket.OPEN) {
+          socket.send(JSON.stringify({ type: 'ping' }));
+        }
+      }, 15000);
+
+      realtimeSharedStaleWatchdogTimer = setInterval(() => {
+        const staleForMs = Date.now() - realtimeSharedLastMessageAt;
+        if (socket.readyState === WebSocket.OPEN && staleForMs > 45000) {
+          if (isRealtimeDebug()) {
+            console.warn(`Realtime shared websocket stale for ${staleForMs}ms; reconnecting`);
+          }
+          socket.close();
+        }
+      }, 10000);
+
+      realtimeResourceListeners.forEach((_listeners, resource) => {
+        socket.send(JSON.stringify({ type: 'subscribe', resource }));
+      });
+    };
+
+    socket.onmessage = (event) => {
+      realtimeSharedLastMessageAt = Date.now();
+      try {
+        const message = JSON.parse(event.data) as WebSocketMessage;
+        dispatchRealtimeMessage(message);
+      } catch (error) {
+        console.error('Realtime shared websocket parse error:', error);
+      }
+    };
+
+    socket.onerror = () => {
+      if (realtimeSharedClosingIntentional) return;
+      if (import.meta.env.DEV && socket.readyState !== WebSocket.OPEN) return;
+      if (isRealtimeDebug()) {
+        console.warn('Realtime shared websocket error');
+      }
+    };
+
+    socket.onclose = () => {
+      realtimeSharedConnectInFlight = false;
+      clearRealtimeSharedTimers();
+
+      if (realtimeSharedClosingIntentional) {
+        realtimeSharedClosingIntentional = false;
+        return;
+      }
+
+      if (realtimeResourceListeners.size === 0) {
+        return;
+      }
+
+      realtimeSharedReconnectAttempts += 1;
+      const delay = 1200 + Math.min(5000, (realtimeSharedReconnectAttempts - 1) * 700);
+      realtimeSharedReconnectTimer = setTimeout(() => {
+        if (realtimeResourceListeners.size === 0) {
+          return;
+        }
+        openRealtimeSharedSocket();
+      }, delay);
+    };
+  } catch (error) {
+    realtimeSharedConnectInFlight = false;
+    if (isRealtimeDebug()) {
+      console.error('Failed to create realtime shared websocket:', error);
+    }
+  }
+};
+
+const realtimeSnapshotUrl = (resourceType: string): string => {
+  if (resourceType === 'helmreleases') {
+    return '/api/helm/releases';
+  }
+  return `/api/${resourceType}`;
+};
+
+const fetchRealtimeResourceSnapshot = async <T>(
+  resourceType: string,
+  transformFn: (raw: any) => T,
+  signal: AbortSignal,
+): Promise<T[]> => {
+  const token = getAuthToken();
+  const response = await fetch(realtimeSnapshotUrl(resourceType), {
+    cache: 'no-store',
+    signal,
+    headers: token ? { Authorization: token } : undefined,
+  });
+
+  if (!response.ok) {
+    throw new Error(`Failed to fetch initial ${resourceType} snapshot`);
+  }
+
+  const payload = await response.json() as { data?: any[] };
+  const items = Array.isArray(payload?.data) ? payload.data : [];
+
+  let result = items.map((raw) => {
+    const looksLikeRawK8sObject =
+      raw
+      && typeof raw === 'object'
+      && raw !== null
+      && typeof (raw as { metadata?: unknown }).metadata === 'object'
+      && (raw as { metadata?: unknown }).metadata !== null;
+
+    if (looksLikeRawK8sObject) {
+      return transformFn(raw);
+    }
+
+    // REST list endpoints already return frontend-shaped items; avoid double-transform.
+    return raw as T;
+  });
+
+  if (resourceType === 'ingresses') {
+    const classAddressMap = await refreshIngressClassAddressMap(signal);
+    result = applyIngressControllerAddresses(result as Ingress[], classAddressMap) as T[];
+  }
+
+  return result;
+};
+
+const subscribeRealtimeResource = (
+  resource: string,
+  listener: RealtimeMessageListener,
+): (() => void) => {
+  let listeners = realtimeResourceListeners.get(resource);
+  const isFirstSubscriberForResource = !listeners;
+
+  if (!listeners) {
+    listeners = new Set<RealtimeMessageListener>();
+    realtimeResourceListeners.set(resource, listeners);
+  }
+  listeners.add(listener);
+
+  openRealtimeSharedSocket();
+
+  if (
+    isFirstSubscriberForResource
+    && realtimeSharedSocket
+    && realtimeSharedSocket.readyState === WebSocket.OPEN
+  ) {
+    realtimeSharedSocket.send(JSON.stringify({ type: 'subscribe', resource }));
+  }
+
+  return () => {
+    const set = realtimeResourceListeners.get(resource);
+    if (!set) return;
+
+    set.delete(listener);
+
+    if (set.size === 0) {
+      realtimeResourceListeners.delete(resource);
+
+      if (realtimeSharedSocket && realtimeSharedSocket.readyState === WebSocket.OPEN) {
+        realtimeSharedSocket.send(JSON.stringify({ type: 'unsubscribe', resource }));
+      }
+    }
+
+    if (realtimeResourceListeners.size === 0 && realtimeSharedSocket) {
+      realtimeSharedClosingIntentional = true;
+      clearRealtimeSharedTimers();
+      safeCloseRealtimeSocket(realtimeSharedSocket);
+      realtimeSharedSocket = null;
+    }
+  };
+};
+
 // Transformation functions to convert raw K8s objects to frontend format
 function transformNamespace(raw: any): Namespace {
   const metadata = raw.metadata || {};
   const status = raw.status || {};
+
+  const fallbackNameParts = [
+    metadata.uid,
+    metadata.resourceVersion,
+    metadata.creationTimestamp,
+  ].filter((part) => typeof part === 'string' && part.trim().length > 0);
+  const fallbackName = fallbackNameParts.length > 0
+    ? `namespace-${fallbackNameParts[0]}`
+    : 'namespace-unknown';
 
   const labelsObj = metadata.labels || {};
   const labels = Object.entries(labelsObj)
@@ -63,7 +398,7 @@ function transformNamespace(raw: any): Namespace {
     .join(', ');
 
   return {
-    name: metadata.name || '',
+    name: metadata.name || fallbackName,
     phase: status.phase || 'Unknown',
     labels,
     age: metadata.creationTimestamp || '',
@@ -75,14 +410,16 @@ function transformDeployment(raw: any): Deployment {
   const spec = raw.spec || {};
   const status = raw.status || {};
   
-  const desired = spec.replicas || 1;
-  const ready = status.readyReplicas || 0;
-  const updated = status.updatedReplicas || 0;
-  const available = status.availableReplicas || 0;
+  const desired = spec.replicas ?? 1;
+  const ready = status.readyReplicas ?? 0;
+  const updated = status.updatedReplicas ?? 0;
+  const available = status.availableReplicas ?? 0;
   
   const images = spec.template?.spec?.containers
     ?.map((c: any) => c.image)
     .filter((img: string) => img) || [];
+  
+  const selectorLabels = spec.selector?.matchLabels as Record<string, string> | undefined;
   
   const statusText = desired === 0
     ? 'Stopped'
@@ -101,6 +438,7 @@ function transformDeployment(raw: any): Deployment {
     available,
     images,
     age: metadata.creationTimestamp || '',
+    selector_labels: selectorLabels,
     labels: (metadata.labels as Record<string, string> | undefined) ?? undefined,
     annotations: (metadata.annotations as Record<string, string> | undefined) ?? undefined,
   };
@@ -307,18 +645,49 @@ function transformCronJob(raw: any): CronJob {
 function transformEvent(raw: any): KubernetesEvent {
   const metadata = raw.metadata || {};
   const involvedObject = raw.involvedObject || {};
+  const message = raw.message || raw.note || '';
+  const firstTimestamp = raw.firstTimestamp || raw.deprecatedFirstTimestamp || metadata.creationTimestamp || '';
+  const lastTimestamp =
+    raw.lastTimestamp
+    || raw.eventTime
+    || raw.series?.lastObservedTime
+    || raw.deprecatedLastTimestamp
+    || metadata.creationTimestamp
+    || '';
   
   return {
     name: metadata.name || '',
     namespace: metadata.namespace || 'default',
     involved_object: `${involvedObject.kind || ''}/${involvedObject.name || ''}`,
     reason: raw.reason || '',
-    message: raw.message || '',
+    message,
     count: raw.count || 1,
-    first_timestamp: raw.firstTimestamp || metadata.creationTimestamp || '',
-    last_timestamp: raw.lastTimestamp || raw.eventTime || metadata.creationTimestamp || '',
+    first_timestamp: firstTimestamp,
+    last_timestamp: lastTimestamp,
     type: raw.type || 'Normal',
   };
+}
+
+/** Check if node has meaningfully changed, with explicit conditions/taints comparison */
+function nodeHasChanged(prev: K8sNode, current: K8sNode): boolean {
+  // Always update if ready status changed
+  if (prev.ready !== current.ready) return true;
+  
+  // Always update if unschedulable status changed
+  if (prev.unschedulable !== current.unschedulable) return true;
+  
+  // Check if taints changed (by comparing stringified array)
+  const prevTaints = (prev.taints || []).sort().join('|');
+  const currTaints = (current.taints || []).sort().join('|');
+  if (prevTaints !== currTaints) return true;
+  
+  // Check if conditions changed (by comparing stringified array)
+  const prevConditions = JSON.stringify((prev.conditions || []).sort((a, b) => a.type.localeCompare(b.type)));
+  const currConditions = JSON.stringify((current.conditions || []).sort((a, b) => a.type.localeCompare(b.type)));
+  if (prevConditions !== currConditions) return true;
+  
+  // For other fields, use full JSON comparison
+  return JSON.stringify(prev) !== JSON.stringify(current);
 }
 
 function transformNode(raw: any): K8sNode {
@@ -328,6 +697,13 @@ function transformNode(raw: any): K8sNode {
   const conditions = status.conditions || [];
   const readyCondition = conditions.find((c: any) => c.type === 'Ready');
   const ready = readyCondition ? readyCondition.status === 'True' : false;
+  const normalizedConditions = conditions.map((condition: any) => ({
+    type: condition?.type || '-',
+    status: condition?.status || '-',
+    reason: condition?.reason,
+    message: condition?.message,
+    last_transition_time: condition?.lastTransitionTime,
+  }));
   const addresses = status.addresses || [];
   const internalIp = addresses.find((a: any) => a.type === 'InternalIP')?.address;
   const externalIp = addresses.find((a: any) => a.type === 'ExternalIP')?.address;
@@ -363,6 +739,7 @@ function transformNode(raw: any): K8sNode {
   return {
     name: metadata.name || '',
     ready,
+    conditions: normalizedConditions,
     roles: sortNodeRoles(roles),
     ip: ipv4 || internalIp || externalIp || ipv6,
     ipv4: ipv4 || undefined,
@@ -484,12 +861,38 @@ function transformHPA(raw: any): HPA {
   const spec = raw.spec || {};
   const status = raw.status || {};
   const ref = spec.scaleTargetRef ? `${spec.scaleTargetRef.kind}/${spec.scaleTargetRef.name}` : '-';
+  const specMetrics = Array.isArray(spec.metrics) ? spec.metrics : [];
+  const currentMetrics = Array.isArray(status.currentMetrics) ? status.currentMetrics : [];
+  const formatMetricTarget = (resourceMetric: any): string | undefined => {
+    const target = resourceMetric?.target;
+    if (!target) return undefined;
+    if (typeof target.averageUtilization === 'number') return `${target.averageUtilization}%`;
+    if (target.averageValue) return String(target.averageValue);
+    if (target.value) return String(target.value);
+    return undefined;
+  };
+  const formatMetricCurrent = (resourceMetric: any): string | undefined => {
+    const current = resourceMetric?.current;
+    if (!current) return undefined;
+    if (typeof current.averageUtilization === 'number') return `${current.averageUtilization}%`;
+    if (current.averageValue) return String(current.averageValue);
+    if (current.value) return String(current.value);
+    return undefined;
+  };
+  const cpuSpecMetric = specMetrics.find((m: any) => m?.resource?.name === 'cpu');
+  const memorySpecMetric = specMetrics.find((m: any) => m?.resource?.name === 'memory');
+  const cpuCurrentMetric = currentMetrics.find((m: any) => m?.resource?.name === 'cpu');
+  const memoryCurrentMetric = currentMetrics.find((m: any) => m?.resource?.name === 'memory');
   const targets = status.currentMetrics?.length ?? 0;
   return {
     name: metadata.name || '',
     namespace: metadata.namespace || 'default',
     reference: ref,
     targets,
+    cpu_target: formatMetricTarget(cpuSpecMetric?.resource),
+    cpu_current: formatMetricCurrent(cpuCurrentMetric?.resource),
+    memory_target: formatMetricTarget(memorySpecMetric?.resource),
+    memory_current: formatMetricCurrent(memoryCurrentMetric?.resource),
     current_replicas: status.currentReplicas ?? 0,
     desired_replicas: status.desiredReplicas ?? spec.minReplicas ?? 0,
     min_replicas: spec.minReplicas ?? 0,
@@ -524,38 +927,43 @@ function transformPDB(raw: any): PDB {
 function transformIngress(raw: any): Ingress {
   const metadata = raw.metadata || {};
   const spec = raw.spec || {};
-  const status = raw.status || {};
   const rules = spec.rules || [];
   const hosts = rules.map((r: any) => r.host).filter(Boolean).join(', ') || '-';
-  const address = (status.loadBalancer?.ingress || []).map((i: any) => i.ip || i.hostname).filter(Boolean).join(', ') || '-';
-  const ingressClass = spec.ingressClassName || spec.ingressClass || '-';
+  const ingressClass = spec.ingressClassName || spec.ingress_class || spec.ingressClass || '-';
+  const address = resolveIngressAddressForClass(ingressClass, raw);
   return {
-    name: metadata.name || '',
-    namespace: metadata.namespace || 'default',
+    name: metadata.name || raw.name || '',
+    namespace: metadata.namespace || raw.namespace || 'default',
     ingress_class: ingressClass,
-    hosts,
+    hosts: typeof raw.hosts === 'string' ? raw.hosts : hosts,
     address,
-    rules: rules.length,
-    age: metadata.creationTimestamp ? new Date(metadata.creationTimestamp).toISOString() : '',
-    labels: metadata.labels as Record<string, string> | undefined,
-    annotations: metadata.annotations as Record<string, string> | undefined,
+    rules: typeof raw.rules === 'number' ? raw.rules : rules.length,
+    age: metadata.creationTimestamp
+      ? new Date(metadata.creationTimestamp).toISOString()
+      : (raw.age || ''),
+    labels: (metadata.labels || raw.labels) as Record<string, string> | undefined,
+    annotations: (metadata.annotations || raw.annotations) as Record<string, string> | undefined,
   };
 }
 
 function transformIngressClass(raw: any): IngressClass {
   const metadata = raw.metadata || {};
   const spec = raw.spec || {};
-  const controller = spec.controller || '-';
-  const isDefault = metadata.annotations?.['ingressclass.kubernetes.io/is-default-class'] === 'true';
-  const params = spec.parameters ? `${spec.parameters.kind}/${spec.parameters.name}` : '-';
+  const controller = spec.controller || raw.controller || '-';
+  const isDefault = metadata.annotations?.['ingressclass.kubernetes.io/is-default-class'] === 'true'
+    || raw.is_default === true;
+  const params = spec.parameters ? `${spec.parameters.kind}/${spec.parameters.name}` : (raw.parameters || '-');
   return {
-    name: metadata.name || '',
+    name: metadata.name || raw.name || '',
     controller,
     is_default: isDefault,
     parameters: params,
-    age: metadata.creationTimestamp ? new Date(metadata.creationTimestamp).toISOString() : '',
-    labels: metadata.labels as Record<string, string> | undefined,
-    annotations: metadata.annotations as Record<string, string> | undefined,
+    address: typeof raw.address === 'string' ? raw.address : '-',
+    age: metadata.creationTimestamp
+      ? new Date(metadata.creationTimestamp).toISOString()
+      : (raw.age || ''),
+    labels: (metadata.labels || raw.labels) as Record<string, string> | undefined,
+    annotations: (metadata.annotations || raw.annotations) as Record<string, string> | undefined,
   };
 }
 
@@ -810,16 +1218,57 @@ function transformVwc(raw: any): Vwc {
   };
 }
 
+function isCustomResourceItemShape(raw: unknown): raw is CustomResource {
+  return !!raw
+    && typeof raw === 'object'
+    && typeof (raw as CustomResource).name === 'string'
+    && (raw as CustomResource).name.length > 0
+    && ('spec' in (raw as object) || 'manifest' in (raw as object));
+}
+
 function transformCustomResource(raw: any): CustomResource {
+  if (isCustomResourceItemShape(raw)) {
+    const manifest = ((raw.manifest && typeof raw.manifest === 'object')
+      ? raw.manifest
+      : raw) as Record<string, unknown>;
+    return {
+      name: raw.name,
+      namespace: raw.namespace ?? null,
+      created_at: raw.created_at ?? null,
+      spec: raw.spec ?? {},
+      status: raw.status ?? null,
+      labels: raw.labels,
+      annotations: raw.annotations,
+      manifest,
+    };
+  }
+
+  const manifest = (raw?.manifest && typeof raw.manifest === 'object')
+    ? raw.manifest
+    : (raw && typeof raw === 'object' ? raw : null);
+  const manifestMetadata = manifest && typeof manifest === 'object' && manifest.metadata && typeof manifest.metadata === 'object'
+    ? manifest.metadata as Record<string, unknown>
+    : {};
   const metadata = raw.metadata || {};
-  const name = metadata.name || '';
-  const namespace = metadata.namespace ?? null;
-  const created_at = metadata.creationTimestamp ? new Date(metadata.creationTimestamp).toISOString() : null;
+  const name = metadata.name || manifestMetadata.name || '';
+  const namespace = metadata.namespace ?? manifestMetadata.namespace ?? null;
+  const created_at = metadata.creationTimestamp ?? manifestMetadata.creationTimestamp
+    ? new Date((metadata.creationTimestamp ?? manifestMetadata.creationTimestamp) as string).toISOString()
+    : null;
   const spec = (raw.data && raw.data.spec) ? raw.data.spec : (raw.spec || {});
   const status = (raw.data && raw.data.status) != null ? raw.data.status : (raw.status != null ? raw.status : null);
-  const labels = (metadata.labels as Record<string, string> | undefined) ?? undefined;
-  const annotations = (metadata.annotations as Record<string, string> | undefined) ?? undefined;
-  return { name, namespace, created_at, spec, status, labels, annotations };
+  const labels = ((metadata.labels ?? manifestMetadata.labels) as Record<string, string> | undefined) ?? undefined;
+  const annotations = ((metadata.annotations ?? manifestMetadata.annotations) as Record<string, string> | undefined) ?? undefined;
+  return {
+    name,
+    namespace,
+    created_at,
+    spec,
+    status,
+    labels,
+    annotations,
+    manifest: manifest as Record<string, unknown> | null,
+  };
 }
 
 function transformCrd(raw: any): Crd {
@@ -881,153 +1330,280 @@ function createRealtimeHook<T>(
     const [error, setError] = useState<string | null>(null);
     const [hasFetched, setHasFetched] = useState(false);
     const [emptyListConfirmed, setEmptyListConfirmed] = useState(false);
+    const [clusterSwitchVersion, setClusterSwitchVersion] = useState(0);
 
     useEffect(() => {
-      let ws: WebSocket | null = null;
-      let reconnectTimeout: ReturnType<typeof setTimeout>;
+      const handleClusterSwitched = () => {
+        setData([]);
+        setError(null);
+        setIsLoading(true);
+        setHasFetched(false);
+        setEmptyListConfirmed(false);
+        setClusterSwitchVersion((v) => v + 1);
+      };
+
+      const handleResourcesRefresh = () => {
+        setError(null);
+        setIsLoading(true);
+        setHasFetched(false);
+        setEmptyListConfirmed(false);
+        setClusterSwitchVersion((v) => v + 1);
+      };
+
+      window.addEventListener('cluster:switched', handleClusterSwitched);
+      window.addEventListener('resources:refresh', handleResourcesRefresh);
+      return () => {
+        window.removeEventListener('cluster:switched', handleClusterSwitched);
+        window.removeEventListener('resources:refresh', handleResourcesRefresh);
+      };
+    }, []);
+
+    useEffect(() => {
       let emptyListTimeout: ReturnType<typeof setTimeout> | null = null;
-      let heartbeatInterval: ReturnType<typeof setInterval> | null = null;
-      let messageQueue: WebSocketMessage[] = [];
+      let reconcileInterval: ReturnType<typeof setInterval> | null = null;
+      let aborted = false;
+      let receivedRealtimeEvent = false;
+      const abortController = new AbortController();
 
-      const connect = () => {
-        try {
-          // WebSocket URL construction
-          const protocol = window.location.protocol === 'https:' ? 'wss' : 'ws';
-          const host = window.location.host;
-          const wsUrl = `${protocol}://${host}/ws`;
+      let unsubscribe: (() => void) | null = null;
 
-          ws = new WebSocket(wsUrl);
+      const reconcileIntervalMs =
+        resourceType === 'crds' ? 12_000
+        : resourceType === 'helmreleases' ? 2_000
+        : resourceType === 'nodes' ? 3_000
+        : resourceType === 'ingresses' ? 5_000
+        : null;
 
-          ws.onopen = () => {
-            if (isRealtimeDebug()) console.log(`WebSocket connected for ${displayName}`);
-            setError(null);
+      if (reconcileIntervalMs !== null) {
+        reconcileInterval = setInterval(() => {
+          if (aborted || document.hidden) return;
 
-            // Subscribe to resource
-            ws!.send(
-              JSON.stringify({
-                type: 'subscribe',
-                resource: resourceType,
-              })
-            );
-
-            // Flush queued messages if any
-            while (messageQueue.length > 0) {
-              const msg = messageQueue.shift();
-              if (msg) {
-                ws!.send(JSON.stringify(msg));
-              }
-            }
-
-            // Keep the socket active through idle LBs/proxies.
-            heartbeatInterval = setInterval(() => {
-              if (ws?.readyState === WebSocket.OPEN) {
-                ws.send(JSON.stringify({ type: 'ping' }));
-              }
-            }, 25000);
-            // Keep loading true until first data or "subscribed" + timeout (avoid "No ... found" on refresh)
-          };
-
-          ws.onmessage = (event) => {
+          const reconcileAbortController = new AbortController();
+          void (async () => {
             try {
-              const message: WebSocketMessage = JSON.parse(event.data);
-
-              if (message.type === 'resource_update' && message.resource === resourceType) {
-                if (emptyListTimeout) {
-                  clearTimeout(emptyListTimeout);
-                  emptyListTimeout = null;
-                }
-                setHasFetched(true);
-                setIsLoading(false);
-
-                const action = message.action?.toUpperCase();
-                const rawItem = message.data;
-
-                if (!rawItem) return;
-
-                // Transform raw K8s object to frontend format
-                const item = transformFn(rawItem);
-
-                if (action === 'ADDED' || action === 'MODIFIED') {
-                  setData((prev) => {
-                    const itemKey = getKey(item);
-                    const existingIndex = prev.findIndex((p) => getKey(p) === itemKey);
-
-                    if (existingIndex >= 0) {
-                      // Update existing item
-                      const updated = [...prev];
-                      updated[existingIndex] = item;
-                      return updated;
-                    } else {
-                      // Add new item
-                      return [...prev, item];
-                    }
-                  });
-                } else if (action === 'DELETED') {
-                  const itemKey = getKey(item);
-                  setData((prev) => prev.filter((p) => getKey(p) !== itemKey));
-                }
-              } else if (message.type === 'subscribed' && message.resource === resourceType) {
-                if (isRealtimeDebug()) console.log(`Subscribed to ${displayName}`);
-                // If no resource_update arrives within 2s, list is truly empty
-                emptyListTimeout = setTimeout(() => {
-                  emptyListTimeout = null;
-                  setHasFetched(true);
-                  setIsLoading(false);
-                  setEmptyListConfirmed(true);
-                }, 2000);
-              } else if (message.type === 'error') {
-                console.error(`WebSocket error for ${displayName}:`, message.message);
-                setError(message.message || 'Unknown error');
+              if (resourceType === 'ingresses') {
+                await refreshIngressClassAddressMap(reconcileAbortController.signal);
               }
-            } catch (e) {
-              console.error(`Error parsing ${displayName} message:`, e);
+              const snapshot = await fetchRealtimeResourceSnapshot(
+                resourceType,
+                transformFn,
+                reconcileAbortController.signal,
+              );
+              if (aborted) return;
+              setData((prev) => {
+                if (resourceType === 'nodes') {
+                  const prevByKey = new Map(prev.map((item) => [getKey(item), item]));
+                  const merged = (snapshot as K8sNode[]).map((node) => {
+                    const previous = prevByKey.get(node.name) as K8sNode | undefined;
+                    if (!previous) return node as T;
+                    return {
+                      ...node,
+                      cpu_used: node.cpu_used ?? previous.cpu_used,
+                      memory_used: node.memory_used ?? previous.memory_used,
+                      ephemeral_storage_used:
+                        node.ephemeral_storage_used ?? previous.ephemeral_storage_used,
+                      cpu_usage_percent: node.cpu_usage_percent ?? previous.cpu_usage_percent,
+                      memory_usage_percent:
+                        node.memory_usage_percent ?? previous.memory_usage_percent,
+                      ephemeral_storage_usage_percent:
+                        node.ephemeral_storage_usage_percent
+                        ?? previous.ephemeral_storage_usage_percent,
+                    } as T;
+                  });
+                  return JSON.stringify(prev) === JSON.stringify(merged) ? prev : merged;
+                }
+                return JSON.stringify(prev) === JSON.stringify(snapshot) ? prev : snapshot;
+              });
+              setHasFetched(true);
+              setIsLoading(false);
+              setEmptyListConfirmed(snapshot.length === 0);
+              setError(null);
+            } catch {
+              // Keep existing realtime state if reconcile snapshot fails.
             }
-          };
+          })();
+        }, reconcileIntervalMs);
+      }
 
-          ws.onerror = (event) => {
-            console.error(`WebSocket error for ${displayName}:`, event);
-            setError(`Connection error for ${displayName}`);
-          };
+      const handleRealtimeMessage = (message: WebSocketMessage) => {
+        if (message.type === 'resource_update' && message.resource === resourceType) {
+          receivedRealtimeEvent = true;
+          if (emptyListTimeout) {
+            clearTimeout(emptyListTimeout);
+            emptyListTimeout = null;
+          }
+          setHasFetched(true);
+          setIsLoading(false);
 
-          ws.onclose = () => {
-            if (isRealtimeDebug()) console.log(`WebSocket disconnected for ${displayName}`);
-            if (heartbeatInterval) {
-              clearInterval(heartbeatInterval);
-              heartbeatInterval = null;
+          const action = message.action?.toUpperCase();
+          const rawItem = message.data;
+          if (!rawItem) return;
+
+          if (resourceType === 'nodes' && (action === 'ADDED' || action === 'MODIFIED')) {
+            const deletingName = (rawItem as any)?.metadata?.deletionTimestamp
+              ? (rawItem as any)?.metadata?.name
+              : undefined;
+            if (deletingName) {
+              setData((prev) => prev.filter((p) => getKey(p) !== deletingName));
+              return;
             }
+          }
 
-            // Attempt to reconnect after 3 seconds
-            reconnectTimeout = setTimeout(() => {
-              if (isRealtimeDebug()) console.log(`Attempting to reconnect to ${displayName}...`);
-              connect();
-            }, 3000);
-          };
-        } catch (err) {
-          console.error(`Failed to connect WebSocket for ${displayName}:`, err);
-          setError(`Failed to connect to ${displayName} stream`);
+          if (action === 'DELETED') {
+            const itemKey = (() => {
+              if (resourceType === 'helmreleases') {
+                const release = rawItem as { namespace?: string; name?: string };
+                if (release.namespace && release.name) {
+                  return `${release.namespace}/${release.name}`;
+                }
+                return undefined;
+              }
+              if (resourceType === 'nodes') {
+                return (rawItem as any)?.metadata?.name;
+              } else if (resourceType === 'namespaces' || resourceType === 'events') {
+                return (resourceType === 'events')
+                  ? `${(rawItem as any)?.metadata?.namespace}/${(rawItem as any)?.metadata?.name}`
+                  : (rawItem as any)?.metadata?.name;
+              } else {
+                return `${(rawItem as any)?.metadata?.namespace}/${(rawItem as any)?.metadata?.name}`;
+              }
+            })();
 
-          // Attempt to reconnect
-          reconnectTimeout = setTimeout(connect, 3000);
+            if (itemKey) {
+              setData((prev) => prev.filter((p) => getKey(p) !== itemKey));
+            }
+            return;
+          }
+
+          const item = transformFn(rawItem);
+
+          if (action === 'ADDED' || action === 'MODIFIED') {
+            setData((prev) => {
+              const itemKey = getKey(item);
+              const existingIndex = prev.findIndex((p) => getKey(p) === itemKey);
+              if (existingIndex >= 0) {
+                const prevItem = prev[existingIndex];
+                const isNode = resourceType === 'nodes';
+                // Watch payloads omit metrics.k8s.io usage — keep last REST-enriched values.
+                const nextItem = isNode
+                  ? ({
+                      ...item,
+                      cpu_used: (item as K8sNode).cpu_used ?? (prevItem as K8sNode).cpu_used,
+                      memory_used: (item as K8sNode).memory_used ?? (prevItem as K8sNode).memory_used,
+                      ephemeral_storage_used:
+                        (item as K8sNode).ephemeral_storage_used
+                        ?? (prevItem as K8sNode).ephemeral_storage_used,
+                      cpu_usage_percent:
+                        (item as K8sNode).cpu_usage_percent ?? (prevItem as K8sNode).cpu_usage_percent,
+                      memory_usage_percent:
+                        (item as K8sNode).memory_usage_percent
+                        ?? (prevItem as K8sNode).memory_usage_percent,
+                      ephemeral_storage_usage_percent:
+                        (item as K8sNode).ephemeral_storage_usage_percent
+                        ?? (prevItem as K8sNode).ephemeral_storage_usage_percent,
+                    } as T)
+                  : item;
+                const hasChanged = isNode
+                  ? nodeHasChanged(prevItem as any, nextItem as any)
+                  : JSON.stringify(prevItem) !== JSON.stringify(nextItem);
+
+                if (!hasChanged) return prev;
+                const updated = [...prev];
+                updated[existingIndex] = nextItem;
+                if (resourceType === 'ingresses') {
+                  return applyIngressControllerAddresses(updated as Ingress[]) as T[];
+                }
+                return updated;
+              }
+              const merged = [...prev, item];
+              if (resourceType === 'ingresses') {
+                return applyIngressControllerAddresses(merged as Ingress[]) as T[];
+              }
+              return merged;
+            });
+          }
+          return;
+        }
+
+        if (message.type === 'subscribed' && message.resource === resourceType) {
+          if (isRealtimeDebug()) console.log(`Subscribed to ${displayName}`);
+          emptyListTimeout = setTimeout(() => {
+            emptyListTimeout = null;
+            setHasFetched(true);
+            setIsLoading(false);
+            setEmptyListConfirmed(true);
+          }, 2000);
+          return;
+        }
+
+        if (message.type === 'error') {
+          if (shouldIgnoreRealtimeError(message.message)) {
+            if (isRealtimeDebug()) {
+              console.warn(`Ignoring realtime permission error for ${displayName}:`, message.message);
+            }
+            return;
+          }
+          if (isTransientRealtimeConnectivityError(message.message)) {
+            if (isRealtimeDebug()) {
+              console.warn(`Transient realtime connectivity issue for ${displayName}; retrying in background:`, message.message);
+            }
+            setError(null);
+            return;
+          }
+          console.error(`WebSocket error for ${displayName}:`, message.message);
+          setError(message.message || 'Unknown error');
         }
       };
 
-      connect();
+      void (async () => {
+        try {
+          if (resourceType === 'ingresses') {
+            await refreshIngressClassAddressMap(abortController.signal);
+          }
+
+          if (aborted) return;
+          unsubscribe = subscribeRealtimeResource(resourceType, handleRealtimeMessage);
+
+          const snapshot = await fetchRealtimeResourceSnapshot(
+            resourceType,
+            transformFn,
+            abortController.signal,
+          );
+          if (aborted || receivedRealtimeEvent) {
+            return;
+          }
+          setData(snapshot);
+          setHasFetched(true);
+          setIsLoading(false);
+          setEmptyListConfirmed(snapshot.length === 0);
+          setError(null);
+        } catch (fetchError) {
+          if (aborted) {
+            return;
+          }
+          if (isFetchConnectionError(fetchError)) {
+            setError(null);
+            return;
+          }
+          const message = fetchError instanceof Error ? fetchError.message : 'Failed to fetch initial resources';
+          if (isRealtimeDebug()) {
+            console.warn(`Initial snapshot fetch failed for ${displayName}:`, message);
+          }
+        }
+      })();
 
       return () => {
-        if (reconnectTimeout) {
-          clearTimeout(reconnectTimeout);
-        }
+        aborted = true;
+        abortController.abort();
         if (emptyListTimeout) {
           clearTimeout(emptyListTimeout);
         }
-        if (heartbeatInterval) {
-          clearInterval(heartbeatInterval);
+        if (reconcileInterval) {
+          clearInterval(reconcileInterval);
         }
-        if (ws) {
-          ws.close();
-        }
+        unsubscribe?.();
       };
-    }, []);
+    }, [clusterSwitchVersion]);
 
     return { data, isLoading, error, hasFetched, emptyListConfirmed };
   };
@@ -1239,9 +1815,62 @@ export const useRealtimeCrds = createRealtimeHook<Crd>(
   (item) => item.name
 );
 
+function transformHelmRelease(raw: unknown): HelmRelease {
+  return raw as HelmRelease;
+}
+
+export const useRealtimeHelmReleases = createRealtimeHook<HelmRelease>(
+  'helmreleases',
+  'Helm Releases',
+  transformHelmRelease,
+  (item) => `${item.namespace}/${item.name}`,
+);
+
 function getCustomResourceKey(item: CustomResource): string {
   return item.namespace ? `${item.namespace}/${item.name}` : item.name;
 }
+
+const fetchCustomResourceSnapshot = async (
+  crdName: string,
+  signal: AbortSignal,
+): Promise<CustomResource[]> => {
+  const token = getAuthToken();
+  const response = await fetch(`/api/crds/${encodeURIComponent(crdName)}/resources`, {
+    cache: 'no-store',
+    signal,
+    headers: token ? { Authorization: token } : undefined,
+  });
+
+  const payload = await response.json().catch(() => ({})) as {
+    data?: unknown[];
+    warnings?: string[];
+    error?: string;
+    message?: string;
+  };
+
+  if (!response.ok) {
+    const detail = payload.error || payload.message || response.statusText;
+    throw new Error(detail || `Failed to fetch initial customresources/${crdName} snapshot`);
+  }
+
+  const items = Array.isArray(payload?.data) ? payload.data : [];
+
+  return items.map((raw) => {
+    if (isCustomResourceItemShape(raw)) {
+      return transformCustomResource(raw);
+    }
+    const looksLikeRawK8sObject =
+      raw
+      && typeof raw === 'object'
+      && raw !== null
+      && typeof (raw as { metadata?: unknown }).metadata === 'object'
+      && (raw as { metadata?: unknown }).metadata !== null;
+    if (looksLikeRawK8sObject) {
+      return transformCustomResource(raw);
+    }
+    return raw as CustomResource;
+  });
+};
 
 /** Realtime list for a custom resource kind by CRD name (e.g. "crontabs.stable.example.com"). */
 export function useRealtimeCustomResources(crdName: string | null): {
@@ -1252,82 +1881,159 @@ export function useRealtimeCustomResources(crdName: string | null): {
   const [data, setData] = useState<CustomResource[]>([]);
   const [isLoading, setIsLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
+  const [clusterSwitchVersion, setClusterSwitchVersion] = useState(0);
   const resourceType = crdName ? `customresources/${crdName}` : '';
 
   useEffect(() => {
-    if (!crdName || !resourceType) {
+    const handleClusterSwitched = () => {
       setData([]);
+      setError(null);
+      setIsLoading(true);
+      setClusterSwitchVersion((v) => v + 1);
+    };
+
+    const handleResourcesRefresh = () => {
+      setError(null);
+      setIsLoading(true);
+      setClusterSwitchVersion((v) => v + 1);
+    };
+
+    window.addEventListener('cluster:switched', handleClusterSwitched);
+    window.addEventListener('resources:refresh', handleResourcesRefresh);
+    return () => {
+      window.removeEventListener('cluster:switched', handleClusterSwitched);
+      window.removeEventListener('resources:refresh', handleResourcesRefresh);
+    };
+  }, []);
+
+  useEffect(() => {
+    setData([]);
+    setError(null);
+    setIsLoading(Boolean(crdName && resourceType));
+
+    if (!crdName || !resourceType) {
       setIsLoading(false);
       return;
     }
-    let ws: WebSocket | null = null;
-    let reconnectTimeout: ReturnType<typeof setTimeout>;
-    let heartbeatInterval: ReturnType<typeof setInterval> | null = null;
-    const connect = () => {
-      try {
-        const protocol = window.location.protocol === 'https:' ? 'wss' : 'ws';
-        const host = window.location.host;
-        const wsUrl = `${protocol}://${host}/ws`;
-        ws = new WebSocket(wsUrl);
-        ws.onopen = () => {
+
+    let emptyListTimeout: ReturnType<typeof setTimeout> | null = null;
+    let reconcileInterval: ReturnType<typeof setInterval> | null = null;
+    let aborted = false;
+    let receivedRealtimeEvent = false;
+    const abortController = new AbortController();
+
+    void fetchCustomResourceSnapshot(crdName, abortController.signal)
+      .then((snapshot) => {
+        if (aborted || receivedRealtimeEvent) {
+          return;
+        }
+        setData(snapshot);
+        setIsLoading(false);
+        setError(null);
+      })
+      .catch((fetchError) => {
+        if (aborted) {
+          return;
+        }
+        if (isFetchConnectionError(fetchError)) {
           setError(null);
-          ws!.send(JSON.stringify({ type: 'subscribe', resource: resourceType }));
-          heartbeatInterval = setInterval(() => {
-            if (ws?.readyState === WebSocket.OPEN) {
-              ws.send(JSON.stringify({ type: 'ping' }));
-            }
-          }, 25000);
+          return;
+        }
+        const message = fetchError instanceof Error ? fetchError.message : 'Failed to fetch initial resources';
+        if (isTransientK8sListError(message)) {
+          setError(null);
+          return;
+        }
+        if (isRealtimeDebug()) {
+          console.warn(`Initial snapshot fetch failed for custom resource ${resourceType}:`, message);
+        }
+      });
+
+    const RECONCILE_MS = 12_000;
+    reconcileInterval = setInterval(() => {
+      if (aborted || document.hidden) return;
+
+      const reconcileAbortController = new AbortController();
+      void fetchCustomResourceSnapshot(crdName, reconcileAbortController.signal)
+        .then((snapshot) => {
+          if (aborted) return;
+          setData((prev) => (JSON.stringify(prev) === JSON.stringify(snapshot) ? prev : snapshot));
           setIsLoading(false);
-        };
-        ws.onmessage = (event) => {
-          try {
-            const message: WebSocketMessage = JSON.parse(event.data);
-            if (message.type === 'resource_update' && message.resource === resourceType && message.data) {
-              const action = (message.action || '').toUpperCase();
-              const item = transformCustomResource(message.data);
-              const itemKey = getCustomResourceKey(item);
-              if (action === 'ADDED' || action === 'MODIFIED') {
-                setData((prev) => {
-                  const idx = prev.findIndex((p) => getCustomResourceKey(p) === itemKey);
-                  if (idx >= 0) {
-                    const next = [...prev];
-                    next[idx] = item;
-                    return next;
-                  }
-                  return [...prev, item];
-                });
-              } else if (action === 'DELETED') {
-                setData((prev) => prev.filter((p) => getCustomResourceKey(p) !== itemKey));
+          setError(null);
+        })
+        .catch(() => {
+          // Keep existing realtime state if reconcile snapshot fails.
+        });
+    }, RECONCILE_MS);
+
+    const unsubscribe = subscribeRealtimeResource(resourceType, (message) => {
+      if (message.type === 'resource_update' && message.resource === resourceType) {
+        receivedRealtimeEvent = true;
+        if (emptyListTimeout) {
+          clearTimeout(emptyListTimeout);
+          emptyListTimeout = null;
+        }
+        setIsLoading(false);
+
+        const action = message.action?.toUpperCase();
+        const rawItem = message.data;
+        if (!rawItem) return;
+
+        if (action === 'DELETED') {
+          const item = transformCustomResource(rawItem);
+          const itemKey = getCustomResourceKey(item);
+          setData((prev) => prev.filter((p) => getCustomResourceKey(p) !== itemKey));
+          return;
+        }
+
+        if (action === 'ADDED' || action === 'MODIFIED') {
+          const item = transformCustomResource(rawItem);
+          const itemKey = getCustomResourceKey(item);
+          setData((prev) => {
+            const existingIndex = prev.findIndex((p) => getCustomResourceKey(p) === itemKey);
+            if (existingIndex >= 0) {
+              if (JSON.stringify(prev[existingIndex]) === JSON.stringify(item)) {
+                return prev;
               }
-            } else if (message.type === 'error') {
-              setError(message.message || 'Unknown error');
+              const updated = [...prev];
+              updated[existingIndex] = item;
+              return updated;
             }
-          } catch (e) {
-            console.error('Custom resource message parse error:', e);
-          }
-        };
-        ws.onerror = () => setError('Connection error');
-        ws.onclose = () => {
-          if (heartbeatInterval) {
-            clearInterval(heartbeatInterval);
-            heartbeatInterval = null;
-          }
-          reconnectTimeout = setTimeout(connect, 3000);
-        };
-      } catch (err) {
-        setError('Failed to connect');
-        reconnectTimeout = setTimeout(connect, 3000);
+            return [...prev, item];
+          });
+        }
+        return;
       }
-    };
-    connect();
+
+      if (message.type === 'subscribed' && message.resource === resourceType) {
+        if (isRealtimeDebug()) console.log(`Subscribed to custom resource ${resourceType}`);
+        emptyListTimeout = setTimeout(() => {
+          emptyListTimeout = null;
+          setIsLoading(false);
+        }, 2000);
+        return;
+      }
+
+      if (message.type === 'error') {
+        if (shouldIgnoreRealtimeError(message.message)) {
+          return;
+        }
+        if (isTransientRealtimeConnectivityError(message.message)) {
+          setError(null);
+          return;
+        }
+        setError(message.message || 'Unknown error');
+      }
+    });
+
     return () => {
-      clearTimeout(reconnectTimeout);
-      if (heartbeatInterval) {
-        clearInterval(heartbeatInterval);
-      }
-      ws?.close();
+      aborted = true;
+      abortController.abort();
+      if (emptyListTimeout) clearTimeout(emptyListTimeout);
+      if (reconcileInterval) clearInterval(reconcileInterval);
+      unsubscribe();
     };
-  }, [crdName, resourceType]);
+  }, [crdName, resourceType, clusterSwitchVersion]);
 
   return { data, isLoading, error };
 }

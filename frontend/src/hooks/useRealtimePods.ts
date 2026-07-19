@@ -1,5 +1,6 @@
 import { useEffect, useState, useRef, useCallback } from 'react';
 import { getAuthToken } from '../utils/auth';
+import { isFetchConnectionError } from './useRealtimeResources';
 
 export type ResourceType = 'pods' | 'deployments' | 'services' | 'nodes';
 
@@ -23,6 +24,40 @@ const keepMetric = (nextVal: unknown, prevVal: unknown): unknown => {
   if (hasValue(nextVal)) return nextVal;
   if (hasValue(prevVal)) return prevVal;
   return '-';
+};
+
+const keepField = (nextVal: unknown, prevVal: unknown): unknown => {
+  if (hasValue(nextVal)) return nextVal;
+  return prevVal;
+};
+
+const isHealthyPodStatus = (status: unknown): boolean => {
+  const normalized = String(status ?? '').trim().toLowerCase();
+  return normalized === 'running' || normalized === 'completed' || normalized === 'succeeded';
+};
+
+const isTransientPodSyncFailureStatus = (status: number): boolean => {
+  return status === 500 || status === 502 || status === 503 || status === 504;
+};
+
+const getFreelensLikeDisplayStatus = (pod: any): string => {
+  const statusValue = typeof pod?.status === 'string' ? pod.status.trim() : '';
+  const phaseValue = typeof pod?.phase === 'string' ? pod.phase.trim() : '';
+
+  if (statusValue === 'Evicted' || statusValue === 'Terminating' || statusValue === 'Finalizing') {
+    return statusValue;
+  }
+
+  return phaseValue || statusValue || 'Waiting';
+};
+
+const normalizeWatchAction = (action: unknown): 'ADDED' | 'MODIFIED' | 'DELETED' | null => {
+  if (typeof action !== 'string') return null;
+  const normalized = action.trim().toUpperCase();
+  if (normalized === 'ADDED') return 'ADDED';
+  if (normalized === 'MODIFIED' || normalized === 'APPLIED') return 'MODIFIED';
+  if (normalized === 'DELETED') return 'DELETED';
+  return null;
 };
 
 // Transform raw Kubernetes pod to frontend Pod type
@@ -79,7 +114,50 @@ const transformPod = (rawPod: any): any => {
   // Determine detailed pod status based on lifecycle
   let podStatus = status.phase || 'Unknown';
   const phase = status.phase || 'Unknown';
-  
+  let lastErrorMessage: string | undefined;
+
+  const setLastError = (reason?: unknown, message?: unknown) => {
+    if (lastErrorMessage) return;
+    const reasonText = typeof reason === 'string' ? reason.trim() : '';
+    const messageText = typeof message === 'string' ? message.trim() : '';
+    if (reasonText && messageText) {
+      lastErrorMessage = `${reasonText}: ${messageText}`;
+      return;
+    }
+    if (messageText) {
+      lastErrorMessage = messageText;
+      return;
+    }
+    if (reasonText) {
+      lastErrorMessage = reasonText;
+    }
+  };
+
+  const getDisplayStatus = (): string => {
+    if (status.reason === 'Evicted') {
+      return 'Evicted';
+    }
+
+    if (metadata.deletionTimestamp) {
+      const ephemeralContainerStatuses = status.ephemeralContainerStatuses || [];
+      const allContainerStatuses = [
+        ...containerStatuses,
+        ...initContainerStatuses,
+        ...ephemeralContainerStatuses,
+      ];
+
+      if (allContainerStatuses.some((containerStatus: any) => containerStatus.state?.running || containerStatus.state?.waiting)) {
+        return 'Terminating';
+      }
+
+      if (Array.isArray(metadata.finalizers) && metadata.finalizers.length > 0) {
+        return 'Finalizing';
+      }
+    }
+
+    return phase || 'Waiting';
+  };
+
   // Priority 1: Check for deletion/termination
   if (metadata.deletionTimestamp) {
     podStatus = 'Terminating';
@@ -89,12 +167,14 @@ const transformPod = (rawPod: any): any => {
     for (const initStatus of initContainerStatuses) {
       if (initStatus.state?.waiting) {
         podStatus = initStatus.state.waiting.reason || 'PodInitializing';
+        setLastError(initStatus.state.waiting.reason, initStatus.state.waiting.message);
         break;
       } else if (initStatus.state?.running) {
         podStatus = 'PodInitializing';
         break;
       } else if (initStatus.state?.terminated && initStatus.state.terminated.exitCode !== 0) {
         podStatus = 'Init:' + (initStatus.state.terminated.reason || 'Error');
+        setLastError(initStatus.state.terminated.reason, initStatus.state.terminated.message);
         break;
       }
     }
@@ -107,6 +187,7 @@ const transformPod = (rawPod: any): any => {
     // Check if pod is unschedulable
     if (scheduledCondition && scheduledCondition.status === 'False') {
       podStatus = scheduledCondition.reason || 'Unschedulable';
+      setLastError(scheduledCondition.reason, scheduledCondition.message);
     }
     // Check container statuses for specific waiting reasons
     else if (containerStatuses.length > 0) {
@@ -116,6 +197,7 @@ const transformPod = (rawPod: any): any => {
           const reason = containerStatus.state.waiting.reason;
           if (reason) {
             podStatus = reason;
+            setLastError(reason, containerStatus.state.waiting.message);
             foundWaitingReason = true;
             break;
           }
@@ -158,6 +240,7 @@ const transformPod = (rawPod: any): any => {
         const reason = containerStatus.state.waiting.reason;
         if (reason && errorWaitingReasons.includes(reason)) {
           podStatus = reason;
+          setLastError(reason, containerStatus.state.waiting.message);
           hasError = true;
           break;
         }
@@ -167,6 +250,7 @@ const transformPod = (rawPod: any): any => {
         const reason = containerStatus.state.terminated.reason;
         if (reason && reason !== 'Completed') {
           podStatus = reason;
+          setLastError(reason, containerStatus.state.terminated.message);
           hasError = true;
           break;
         }
@@ -195,12 +279,39 @@ const transformPod = (rawPod: any): any => {
         const reason = containerStatus.state.terminated.reason;
         if (reason) {
           podStatus = reason;
+          setLastError(reason, containerStatus.state.terminated.message);
           break;
         }
       }
     }
     if (podStatus === phase) {
       podStatus = 'Error';
+    }
+  }
+
+  // Fallback: derive a user-facing error message from pod-level status/conditions
+  // when container-level state does not expose one.
+  if (!lastErrorMessage) {
+    const normalizedStatus = String(podStatus).toLowerCase();
+    const isHealthyStatus =
+      normalizedStatus === 'running' ||
+      normalizedStatus === 'completed' ||
+      normalizedStatus === 'succeeded';
+
+    if (!isHealthyStatus) {
+      setLastError(status.reason, status.message);
+
+      if (!lastErrorMessage) {
+        const conditions = Array.isArray(status.conditions) ? status.conditions : [];
+        const failingCondition = conditions.find(
+          (condition: any) =>
+            String(condition?.status).toLowerCase() === 'false' &&
+            (typeof condition?.message === 'string' || typeof condition?.reason === 'string')
+        );
+        if (failingCondition) {
+          setLastError(failingCondition.reason, failingCondition.message);
+        }
+      }
     }
   }
 
@@ -296,7 +407,9 @@ const transformPod = (rawPod: any): any => {
     namespace: metadata.namespace || '',
     created: metadata.creationTimestamp || '',
     status: podStatus,
+    display_status: getDisplayStatus(),
     phase: phase,
+    last_error: lastErrorMessage,
     ready,
     restarts,
     age: metadata.creationTimestamp || '',
@@ -324,108 +437,224 @@ export const useRealtimePods = <T>(options: UseRealtimePodsOptions = {}) => {
   const { enabled = true, reconnectInterval = 3000 } = options;
   
   const [data, setData] = useState<T[]>([]);
-  const [isConnected, setIsConnected] = useState(false);
   const [isLoading, setIsLoading] = useState(true);
   const [hasFetched, setHasFetched] = useState(false);
+  const [emptyListConfirmed, setEmptyListConfirmed] = useState(false);
+  const [isConnected, setIsConnected] = useState(false);
   const [error, setError] = useState<string | null>(null);
-  const hasFetchedRef = useRef(false);
   const wsRef = useRef<WebSocket | null>(null);
   const reconnectTimeoutRef = useRef<number>();
-  const emptyListTimeoutRef = useRef<number>();
   const reconnectAttemptsRef = useRef(0);
-  const maxReconnectAttempts = 10;
+  const lastMessageAtRef = useRef<number>(Date.now());
+  const intentionalCloseRef = useRef(false);
+  const emptyListTimeoutRef = useRef<number>();
+  const heartbeatIntervalRef = useRef<number>();
+  const staleWatchdogRef = useRef<number>();
   const deletionTimeoutsRef = useRef<Map<string, number>>(new Map()); // Track deletion timeouts
   const deletedPodsRef = useRef<Set<string>>(new Set()); // Track deleted pods to prevent re-adding
+  const apiMissCountsRef = useRef<Map<string, number>>(new Map()); // Track pods missing from REST across syncs
+  const [clusterSwitchVersion, setClusterSwitchVersion] = useState(0);
 
-  const markFetched = useCallback(() => {
-    if (!hasFetchedRef.current) {
-      hasFetchedRef.current = true;
-      setHasFetched(true);
-    }
-    setIsLoading(false);
+  useEffect(() => {
+    const handleClusterSwitched = () => {
+      setData([]);
+      setError(null);
+      setIsConnected(false);
+      setIsLoading(true);
+      setHasFetched(false);
+      setEmptyListConfirmed(false);
+      reconnectAttemptsRef.current = 0;
+      lastMessageAtRef.current = Date.now();
+      deletedPodsRef.current.clear();
+      apiMissCountsRef.current.clear();
+      deletionTimeoutsRef.current.forEach(timeout => clearTimeout(timeout));
+      deletionTimeoutsRef.current.clear();
+      setClusterSwitchVersion((v) => v + 1);
+    };
+
+    window.addEventListener('cluster:switched', handleClusterSwitched);
+    return () => {
+      window.removeEventListener('cluster:switched', handleClusterSwitched);
+    };
   }, []);
 
   const syncPodDetails = useCallback(async () => {
     const token = getAuthToken();
-    if (!token) return;
 
     try {
       const response = await fetch('/api/pods', {
-        headers: {
-          Authorization: token,
-        },
+        headers: token ? { Authorization: token } : undefined,
       });
 
-      if (!response.ok) return;
+      if (response.status === 401) {
+        window.dispatchEvent(new CustomEvent('auth:expired'));
+      }
 
+      if (!response.ok) {
+        if (isTransientPodSyncFailureStatus(response.status)) {
+          // Keep retrying quietly while cluster/API connectivity recovers.
+          setError(null);
+          setIsLoading(false);
+          return;
+        }
+        setError(`Failed to sync pod metrics (${response.status})`);
+        setIsLoading(false);
+        return;
+      }
       const payload = await response.json();
       const apiPods: any[] = Array.isArray(payload?.data) ? (payload.data as any[]) : [];
+
+      if (emptyListTimeoutRef.current) {
+        clearTimeout(emptyListTimeoutRef.current);
+        emptyListTimeoutRef.current = undefined;
+      }
+      setHasFetched(true);
+      setIsLoading(false);
+      setEmptyListConfirmed(apiPods.length === 0);
 
       setData((prevData) => {
         const keyOf = (item: any) => `${item.namespace}/${item.name}`;
         const apiByKey = new Map<string, any>(apiPods.map((item: any) => [keyOf(item), item]));
+        const nextMissCounts = new Map<string, number>();
 
-        // Use API response as source of truth for existence, so deleted pods are
-        // removed even if a websocket DELETED event is missed.
-        const merged = prevData
-          .filter((item: any) => apiByKey.has(keyOf(item)))
-          .map((item: any) => {
-            const apiItem = apiByKey.get(keyOf(item));
+        // Keep all WS-driven pods; only inject metrics from REST so that pods
+        // arriving via WebSocket are never removed by a single stale polling snapshot.
+        const merged = prevData.flatMap((item: any) => {
+          const apiItem = apiByKey.get(keyOf(item));
+          if (!apiItem) {
+            const key = keyOf(item);
+            const missCount = (apiMissCountsRef.current.get(key) ?? 0) + 1;
+            nextMissCounts.set(key, missCount);
 
-            return {
-              ...item,
-              cpu: keepMetric(apiItem.cpu, item.cpu),
-              memory: keepMetric(apiItem.memory, item.memory),
-              cpu_capacity: keepMetric(apiItem.cpu_capacity, item.cpu_capacity),
-              memory_capacity: keepMetric(apiItem.memory_capacity, item.memory_capacity),
-              cpu_usage_percent: apiItem.cpu_usage_percent ?? item.cpu_usage_percent,
-              memory_usage_percent: apiItem.memory_usage_percent ?? item.memory_usage_percent,
-              controlled_by: apiItem.controlled_by ?? item.controlled_by,
-              qos: apiItem.qos ?? item.qos,
-            };
-          });
+            // If a pod disappears from the authoritative REST list, remove it on the
+            // next reconciliation pass so stale redeploy pods don't linger in the table.
+            if (missCount >= 1 && !deletedPodsRef.current.has(key)) {
+              return [];
+            }
+            return [item];
+          }
+
+          nextMissCounts.delete(keyOf(item));
+
+          const reconciledStatus = keepField(apiItem.status, item.status);
+          const reconciledDisplayStatus = keepField(
+            apiItem.display_status ?? getFreelensLikeDisplayStatus(apiItem),
+            item.display_status
+          );
+          const shouldClearLastError =
+            isHealthyPodStatus(reconciledDisplayStatus) || isHealthyPodStatus(reconciledStatus);
+
+          return [{
+            ...item,
+            // Keep pod lifecycle fields fresh even when a websocket update is delayed/missed.
+            status: reconciledStatus,
+            display_status: reconciledDisplayStatus,
+            phase: keepField(apiItem.phase, item.phase),
+            last_error: shouldClearLastError ? undefined : keepField(apiItem.last_error, item.last_error),
+            ready: keepField(apiItem.ready, item.ready),
+            restarts: keepField(apiItem.restarts, item.restarts),
+            node: keepField(apiItem.node, item.node),
+            pod_ip: keepField(apiItem.pod_ip, item.pod_ip),
+            age: keepField(apiItem.age, item.age),
+            labels: keepField(apiItem.labels, item.labels),
+            annotations: keepField(apiItem.annotations, item.annotations),
+            cpu: keepMetric(apiItem.cpu, item.cpu),
+            memory: keepMetric(apiItem.memory, item.memory),
+            cpu_capacity: keepMetric(apiItem.cpu_capacity, item.cpu_capacity),
+            memory_capacity: keepMetric(apiItem.memory_capacity, item.memory_capacity),
+            cpu_usage_percent: apiItem.cpu_usage_percent ?? item.cpu_usage_percent,
+            memory_usage_percent: apiItem.memory_usage_percent ?? item.memory_usage_percent,
+            // WS wins for controlled_by/qos when it has a real value
+            controlled_by: item.controlled_by !== '-' ? item.controlled_by : (apiItem.controlled_by ?? item.controlled_by),
+            qos: item.qos !== '-' ? item.qos : (apiItem.qos ?? item.qos),
+          }];
+        });
 
         const existingKeys = new Set(merged.map((item: any) => keyOf(item)));
         for (const apiItem of apiPods) {
           const key = keyOf(apiItem);
           // Don't re-add pods that were recently deleted
           if (!existingKeys.has(key) && !deletedPodsRef.current.has(key)) {
-            merged.push(apiItem as T);
+            merged.push({
+              ...apiItem,
+              display_status: apiItem.display_status ?? getFreelensLikeDisplayStatus(apiItem),
+            } as T);
           }
         }
+
+        // Persist miss counters only for pods currently tracked in state.
+        for (const item of merged as any[]) {
+          const key = keyOf(item);
+          if (!nextMissCounts.has(key) && apiByKey.has(key)) {
+            nextMissCounts.set(key, 0);
+          }
+        }
+        apiMissCountsRef.current = nextMissCounts;
 
         return merged as T[];
       });
     } catch (syncError) {
-      console.error('[useRealtimePods] Failed to sync pod details:', syncError);
+      if (!isFetchConnectionError(syncError) && isRealtimeDebug()) {
+        console.warn('[useRealtimePods] Failed to sync pod details:', syncError);
+      }
+      // Network interruptions are transient; keep background retry active
+      // without surfacing hard table errors.
+      setError(null);
+      setIsLoading(false);
     }
   }, []);
 
   const connect = useCallback(() => {
     if (!enabled) return;
 
-    const protocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
-    const host = window.location.hostname;
-    const port = window.location.port ? `:${window.location.port}` : '';
-    const wsUrl = `${protocol}//${host}${port}/ws`;
+    const wsUrl = `${window.location.protocol === 'https:' ? 'wss:' : 'ws:'}//${window.location.host}/ws`;
 
     try {
+      intentionalCloseRef.current = false;
       const ws = new WebSocket(wsUrl);
 
       ws.onopen = () => {
+        if (intentionalCloseRef.current) {
+          ws.close();
+          return;
+        }
+
         if (isRealtimeDebug()) console.log('[useRealtimePods] WebSocket connected');
         setIsConnected(true);
         setError(null);
         reconnectAttemptsRef.current = 0;
+        lastMessageAtRef.current = Date.now();
+
+        if (heartbeatIntervalRef.current) clearInterval(heartbeatIntervalRef.current);
+        heartbeatIntervalRef.current = window.setInterval(() => {
+          if (ws.readyState === WebSocket.OPEN) {
+            ws.send(JSON.stringify({ type: 'ping' }));
+          }
+        }, 15000);
+
+        if (staleWatchdogRef.current) clearInterval(staleWatchdogRef.current);
+        staleWatchdogRef.current = window.setInterval(() => {
+          const staleForMs = Date.now() - lastMessageAtRef.current;
+          if (ws.readyState === WebSocket.OPEN && staleForMs > 45000) {
+            if (isRealtimeDebug()) {
+              console.warn(`[useRealtimePods] No messages for ${staleForMs}ms, reconnecting stale socket`);
+            }
+            ws.close();
+          }
+        }, 10000);
 
         // Subscribe to pods
         ws.send(JSON.stringify({
           type: 'subscribe',
           resource: 'pods'
         }));
+
+        // Hydrate full pod rows (including cpu/memory metrics) as soon as socket connects.
+        void syncPodDetails();
       };
 
       ws.onmessage = (event) => {
+        lastMessageAtRef.current = Date.now();
         try {
           const message = JSON.parse(event.data);
 
@@ -434,9 +663,14 @@ export const useRealtimePods = <T>(options: UseRealtimePodsOptions = {}) => {
               clearTimeout(emptyListTimeoutRef.current);
               emptyListTimeoutRef.current = undefined;
             }
-            markFetched();
-
+            setHasFetched(true);
+            setIsLoading(false);
+            setEmptyListConfirmed(false);
             const { action, data: rawPodData } = message;
+            const normalizedAction = normalizeWatchAction(action);
+            if (!normalizedAction) {
+              return;
+            }
             const transformedPod = transformPod(rawPodData);
             
             // Debug log for status changes (dev only)
@@ -447,7 +681,7 @@ export const useRealtimePods = <T>(options: UseRealtimePodsOptions = {}) => {
             }
 
             setData((prevData) => {
-              switch (action) {
+              switch (normalizedAction) {
                 case 'ADDED':
                   const podKey = `${transformedPod.namespace}/${transformedPod.name}`;
                   
@@ -522,6 +756,10 @@ export const useRealtimePods = <T>(options: UseRealtimePodsOptions = {}) => {
                       controlled_by: transformedPod.controlled_by !== '-' ? transformedPod.controlled_by : (existingPod.controlled_by || '-'),
                       qos: transformedPod.qos !== '-' ? transformedPod.qos : (existingPod.qos || '-'),
                     };
+
+                    // Skip update if nothing actually changed (avoids unnecessary re-renders / chart flicker)
+                    if (JSON.stringify(existingPod) === JSON.stringify(mergedPod)) return prevData;
+
                     updated[foundIndex] = mergedPod as T;
                     
                     // Log status transitions (dev only)
@@ -592,21 +830,24 @@ export const useRealtimePods = <T>(options: UseRealtimePodsOptions = {}) => {
                   return prevData;
               }
             });
-          } else if (message.type === 'subscribed') {
+          } else if (message.type === 'subscribed' && message.resource === 'pods') {
             if (isRealtimeDebug()) console.log('[useRealtimePods] Subscription confirmed');
-            // Avoid showing empty state immediately while first events are still in flight.
-            if (!hasFetchedRef.current) {
-              if (emptyListTimeoutRef.current) {
-                clearTimeout(emptyListTimeoutRef.current);
-              }
-              emptyListTimeoutRef.current = window.setTimeout(() => {
-                emptyListTimeoutRef.current = undefined;
-                markFetched();
-              }, 2000);
+            if (emptyListTimeoutRef.current) {
+              clearTimeout(emptyListTimeoutRef.current);
             }
+            // If no pod events arrive shortly after subscribe, confirm empty list and stop loading.
+            emptyListTimeoutRef.current = window.setTimeout(() => {
+              setHasFetched(true);
+              setIsLoading(false);
+              setEmptyListConfirmed(true);
+              emptyListTimeoutRef.current = undefined;
+            }, 2000);
           } else if (message.type === 'error') {
             console.error('[useRealtimePods] Server error:', message.message);
             setError(message.message);
+            if (!hasFetched) {
+              setIsLoading(false);
+            }
           }
         } catch (err) {
           console.error('[useRealtimePods] Failed to parse message:', err);
@@ -614,29 +855,48 @@ export const useRealtimePods = <T>(options: UseRealtimePodsOptions = {}) => {
       };
 
       ws.onerror = (errorEvent) => {
+        if (intentionalCloseRef.current) {
+          return;
+        }
+        if (import.meta.env.DEV && ws.readyState !== WebSocket.OPEN) {
+          if (isRealtimeDebug()) {
+            console.log('[useRealtimePods] Ignoring pre-open websocket error during dev remount');
+          }
+          return;
+        }
         console.error('[useRealtimePods] WebSocket error:', errorEvent);
-        setError('WebSocket connection error');
+        // Don't set error here — onclose fires immediately after and handles reconnection.
+        // Only surface an error if reconnection is exhausted (handled in onclose).
       };
 
       ws.onclose = () => {
+        if (intentionalCloseRef.current) {
+          if (isRealtimeDebug()) console.log('[useRealtimePods] WebSocket closed intentionally');
+          return;
+        }
+        if (heartbeatIntervalRef.current) {
+          clearInterval(heartbeatIntervalRef.current);
+          heartbeatIntervalRef.current = undefined;
+        }
+        if (staleWatchdogRef.current) {
+          clearInterval(staleWatchdogRef.current);
+          staleWatchdogRef.current = undefined;
+        }
         if (isRealtimeDebug()) console.log('[useRealtimePods] WebSocket closed');
         setIsConnected(false);
         wsRef.current = null;
 
         // Attempt reconnection
-        if (
-          enabled &&
-          reconnectAttemptsRef.current < maxReconnectAttempts
-        ) {
+        if (enabled) {
           reconnectAttemptsRef.current += 1;
           if (isRealtimeDebug()) console.log(
-            `[useRealtimePods] Reconnecting... (attempt ${reconnectAttemptsRef.current}/${maxReconnectAttempts})`
+            `[useRealtimePods] Reconnecting... (attempt ${reconnectAttemptsRef.current})`
           );
+          const jitter = (reconnectAttemptsRef.current % 5) * 120;
+          const backoff = Math.min(5000, Math.max(0, reconnectAttemptsRef.current - 1) * 600);
           reconnectTimeoutRef.current = setTimeout(() => {
             connect();
-          }, reconnectInterval);
-        } else if (reconnectAttemptsRef.current >= maxReconnectAttempts) {
-          setError('Max reconnection attempts reached');
+          }, reconnectInterval + backoff + jitter);
         }
       };
 
@@ -645,11 +905,30 @@ export const useRealtimePods = <T>(options: UseRealtimePodsOptions = {}) => {
       console.error('[useRealtimePods] Failed to create WebSocket:', err);
       setError('Failed to create WebSocket connection');
     }
-  }, [enabled, reconnectInterval, markFetched]);
+  }, [enabled, reconnectInterval]);
 
   const disconnect = useCallback(() => {
+    intentionalCloseRef.current = true;
+    if (heartbeatIntervalRef.current) {
+      clearInterval(heartbeatIntervalRef.current);
+      heartbeatIntervalRef.current = undefined;
+    }
+    if (staleWatchdogRef.current) {
+      clearInterval(staleWatchdogRef.current);
+      staleWatchdogRef.current = undefined;
+    }
     if (wsRef.current) {
-      wsRef.current.close();
+      const ws = wsRef.current;
+      if (ws.readyState === WebSocket.CONNECTING) {
+        ws.onmessage = null;
+        ws.onerror = null;
+        ws.onclose = null;
+        ws.onopen = () => {
+          ws.close();
+        };
+      } else if (ws.readyState === WebSocket.OPEN || ws.readyState === WebSocket.CLOSING) {
+        ws.close();
+      }
       wsRef.current = null;
     }
     if (reconnectTimeoutRef.current) {
@@ -669,16 +948,26 @@ export const useRealtimePods = <T>(options: UseRealtimePodsOptions = {}) => {
 
   useEffect(() => {
     if (enabled) {
-      connect();
+      setIsLoading(true);
+      setHasFetched(false);
+      setEmptyListConfirmed(false);
+      // Stagger initial connect a bit to reduce websocket burst during route/hot updates.
+      reconnectTimeoutRef.current = setTimeout(() => {
+        connect();
+      }, 180);
     }
 
     return () => {
       disconnect();
+      if (emptyListTimeoutRef.current) {
+        clearTimeout(emptyListTimeoutRef.current);
+        emptyListTimeoutRef.current = undefined;
+      }
       // Clear all deletion timeouts on unmount
       deletionTimeoutsRef.current.forEach(timeout => clearTimeout(timeout));
       deletionTimeoutsRef.current.clear();
     };
-  }, [enabled, connect, disconnect]);
+  }, [enabled, connect, disconnect, clusterSwitchVersion]);
 
   useEffect(() => {
     if (!enabled) return;
@@ -693,11 +982,12 @@ export const useRealtimePods = <T>(options: UseRealtimePodsOptions = {}) => {
 
   return {
     data,
+    isLoading,
+    hasFetched,
+    emptyListConfirmed,
     isConnected,
     error,
     reconnect: connect,
     disconnect,
-    isLoading,
-    hasFetched,
   };
 };

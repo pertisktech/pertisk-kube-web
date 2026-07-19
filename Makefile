@@ -1,7 +1,7 @@
 SHELL := /bin/sh
 
-K8S_KUBECONFIG ?= $(HOME)/.kube/config
-K8S_KUBECONFIG_TALOS ?= /Users/nat/.kube/talos-prod-cluster-kubeconfig.yaml
+K8S_KUBECONFIG ?=/Users/nat/.kube/omni-proxmox-285h-kubeconfig.yaml
+K8S_KUBECONFIG_TALOS ?= /Users/nat/.kube/omni-proxmox-285h-kubeconfig.yaml
 K8S_KUBECONFIG_TALOS_HZ ?= /Users/nat/.kube/hetznet-kubeadm-cluster.yaml
 K8S_KUBECONFIG_ORION ?= /Users/nat/.kube/orion-kubeadm-cluster.yaml
 VERSION ?= $(shell V=$$(git describe --tags --always --abbrev=7 2>/dev/null || echo ""); \

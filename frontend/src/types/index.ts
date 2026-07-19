@@ -76,6 +76,7 @@ export interface CustomResource {
   status: Record<string, unknown> | null;
   labels?: Record<string, string> | null;
   annotations?: Record<string, string> | null;
+  manifest?: Record<string, unknown> | null;
 }
 
 export interface Namespace {
@@ -90,7 +91,9 @@ export interface Pod {
   namespace: string;
   created?: string;
   status?: string;
+  display_status?: string;
   phase?: string;
+  last_error?: string;
   ready: string;
   restarts: number;
   age: string;
@@ -252,6 +255,13 @@ export interface KubernetesEvent {
 export interface K8sNode {
   name: string;
   ready: boolean | string;
+  conditions?: Array<{
+    type: string;
+    status: string;
+    reason?: string;
+    message?: string;
+    last_transition_time?: string;
+  }>;
   roles: string[];
   ip?: string;
   ipv4?: string;
@@ -405,6 +415,10 @@ export interface HPA {
   namespace: string;
   reference: string;
   targets: number;
+  cpu_target?: string;
+  cpu_current?: string;
+  memory_target?: string;
+  memory_current?: string;
   current_replicas: number;
   desired_replicas: number;
   min_replicas: number;
@@ -510,6 +524,7 @@ export interface IngressClass {
   controller: string;
   is_default: boolean;
   parameters: string;
+  address?: string;
   age: string;
   labels?: Record<string, string>;
   annotations?: Record<string, string>;
