@@ -14,7 +14,7 @@ app:
   name: pertisk-kube
   replicaCount: 3
   image:
-    registry: harbor.tools.pertisk.com
+    registry: harbor.tools.thaidevops.co
     repository: pertisksoft/pertisk-kube/web
     tag: "v0.0.4"
     pullPolicy: Always

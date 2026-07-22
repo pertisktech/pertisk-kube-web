@@ -1,1 +1,1 @@
-make docker-push-multi IMAGE_TAG=v1.0.2
+make docker-push-multi IMAGE_TAG=v1.0.6
