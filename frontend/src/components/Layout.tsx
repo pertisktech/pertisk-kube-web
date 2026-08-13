@@ -3,7 +3,8 @@ import type { CSSProperties } from 'react';
 import { Outlet, Link, useLocation } from 'react-router-dom';
 import { useNamespace } from '../context/NamespaceContext';
 import { useRealtimeNamespaces, useRealtimeCrds } from '../hooks/useRealtimeResources';
-import { useNamespaces } from '../hooks/useKubernetes';
+import { fetchClusterStatus, useNamespaces, type ClusterStatus } from '../hooks/useKubernetes';
+import { ClusterSetupModal } from './ClusterSetupModal';
 import { Checkbox } from './Checkbox';
 import { BottomPanel } from './BottomPanel';
 import type { IconComponent } from './Icons';
@@ -156,6 +157,8 @@ export const Layout = ({ username, onLogout }: LayoutProps) => {
   const [customResourcesOpen, setCustomResourcesOpen] = useState(false);
   const [backupOpen, setBackupOpen] = useState(false);
   const [expandedCrdGroups, setExpandedCrdGroups] = useState<Set<string>>(new Set());
+  const [clusterStatus, setClusterStatus] = useState<ClusterStatus | null>(null);
+  const [showClusterSetup, setShowClusterSetup] = useState(false);
   const [sidebarWidthPx, setSidebarWidthPx] = useState(() => {
     if (typeof window === 'undefined') return SIDEBAR_WIDTH_DEFAULT;
     const stored = window.localStorage.getItem(SIDEBAR_WIDTH_STORAGE_KEY);
@@ -215,6 +218,33 @@ export const Layout = ({ username, onLogout }: LayoutProps) => {
 
     document.addEventListener('click', handleClickOutside);
     return () => document.removeEventListener('click', handleClickOutside);
+  }, []);
+
+  useEffect(() => {
+    let cancelled = false;
+    const refresh = async () => {
+      try {
+        const status = await fetchClusterStatus();
+        if (cancelled) return;
+        setClusterStatus(status);
+        if (status.placeholder) {
+          setShowClusterSetup(true);
+        }
+      } catch {
+        // keep previous status
+      }
+    };
+    refresh();
+    const interval = window.setInterval(refresh, 5000);
+    const onSwitched = () => {
+      void refresh();
+    };
+    window.addEventListener('cluster:switched', onSwitched);
+    return () => {
+      cancelled = true;
+      window.clearInterval(interval);
+      window.removeEventListener('cluster:switched', onSwitched);
+    };
   }, []);
 
   useEffect(() => {
@@ -1167,6 +1197,27 @@ export const Layout = ({ username, onLogout }: LayoutProps) => {
             </nav>
           </div>
           <div className="flex items-center gap-2">
+            <button
+              type="button"
+              onClick={() => setShowClusterSetup(true)}
+              className={cn(
+                'px-3 py-1.5 rounded-lg border text-sm font-medium transition-colors',
+                clusterStatus?.placeholder
+                  ? 'border-amber-500/40 bg-amber-500/10 text-amber-700 dark:text-amber-300 hover:bg-amber-500/15'
+                  : 'border-border bg-surface text-text-secondary hover:bg-hover hover:text-text'
+              )}
+              title={
+                clusterStatus?.context
+                  ? `Cluster context: ${clusterStatus.context}`
+                  : 'Connect or switch Kubernetes cluster'
+              }
+            >
+              {clusterStatus?.placeholder
+                ? 'Connect cluster'
+                : clusterStatus?.context
+                  ? clusterStatus.context
+                  : 'Cluster'}
+            </button>
             {shouldShowNamespaceFilter && (
               <input
                 type="text"
@@ -1297,6 +1348,21 @@ export const Layout = ({ username, onLogout }: LayoutProps) => {
           </div>
         </header>
 
+        {clusterStatus?.placeholder && (
+          <div className="shrink-0 border-b border-amber-500/30 bg-amber-500/10 px-4 py-2 text-sm text-amber-800 dark:text-amber-200 flex items-center justify-between gap-3">
+            <span>
+              Service is running without a Kubernetes connection. Upload a kubeconfig to continue.
+            </span>
+            <button
+              type="button"
+              onClick={() => setShowClusterSetup(true)}
+              className="shrink-0 rounded-md border border-amber-500/40 px-3 py-1 font-medium hover:bg-amber-500/15"
+            >
+              Connect
+            </button>
+          </div>
+        )}
+
         {/* Content */}
         <main className="flex-1 overflow-auto bg-bg p-4 min-h-0">
           <Suspense fallback={null}>
@@ -1306,6 +1372,15 @@ export const Layout = ({ username, onLogout }: LayoutProps) => {
         {/* Bottom panel — VS Code style tabs for shells, logs, YAML */}
         <BottomPanel />
       </div>
+
+      <ClusterSetupModal
+        open={showClusterSetup}
+        onClose={() => setShowClusterSetup(false)}
+        onConnected={(status) => {
+          setClusterStatus(status);
+          setShowClusterSetup(false);
+        }}
+      />
     </div>
   );
 };

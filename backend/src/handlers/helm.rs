@@ -73,7 +73,7 @@ struct ArtifactHubRepo {
 // ── Helm Releases ─────────────────────────────────────────────────────────────
 
 pub async fn list_helm_releases(State(state): State<AppState>) -> impl IntoResponse {
-    let client = state.client.clone();
+    let client = state.kube_client().await;
     let api: Api<Secret> = Api::all(client);
     let lp = ListParams::default().labels("owner=helm");
 
@@ -295,7 +295,7 @@ pub async fn get_helm_release_yaml(
     Path((namespace, name)): Path<(String, String)>,
     State(state): State<AppState>,
 ) -> impl IntoResponse {
-    let client = state.client.clone();
+    let client = state.kube_client().await;
     let api: Api<Secret> = Api::namespaced(client, &namespace);
     let lp = ListParams::default().labels(&format!("owner=helm,name={}", name));
 
@@ -603,7 +603,7 @@ pub async fn upgrade_helm_release(
             .into_response();
     }
 
-    let api: Api<Secret> = Api::namespaced(state.client, &namespace);
+    let api: Api<Secret> = Api::namespaced(state.kube_client().await, &namespace);
     let lp = ListParams::default().labels(&format!("owner=helm,name={}", name));
 
     let list = match api.list(&lp).await {

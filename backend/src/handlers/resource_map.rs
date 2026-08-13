@@ -30,7 +30,7 @@ pub async fn get_resource_map(
     State(state): State<AppState>,
     Query(params): Query<ResourceMapQuery>,
 ) -> impl IntoResponse {
-    let client = state.client.clone();
+    let client = state.kube_client().await;
 
     let pods_api: Api<Pod> = Api::all(client.clone());
     let deployments_api: Api<Deployment> = Api::all(client.clone());

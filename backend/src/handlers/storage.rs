@@ -13,7 +13,7 @@ use crate::AppState;
 pub async fn list_persistent_volumes(State(state): State<AppState>) -> impl IntoResponse {
     use k8s_openapi::api::core::v1::PersistentVolume;
 
-    let api: Api<PersistentVolume> = Api::all(state.client);
+    let api: Api<PersistentVolume> = Api::all(state.kube_client().await);
     match api.list(&ListParams::default()).await {
         Ok(list) => {
             let items: Vec<PersistentVolumeItem> = list
@@ -116,7 +116,7 @@ pub async fn list_persistent_volumes(State(state): State<AppState>) -> impl Into
 pub async fn list_persistent_volume_claims(State(state): State<AppState>) -> impl IntoResponse {
     use k8s_openapi::api::core::v1::PersistentVolumeClaim;
 
-    let api: Api<PersistentVolumeClaim> = Api::all(state.client);
+    let api: Api<PersistentVolumeClaim> = Api::all(state.kube_client().await);
     match api.list(&ListParams::default()).await {
         Ok(list) => {
             let items: Vec<PersistentVolumeClaimItem> = list
@@ -207,7 +207,7 @@ pub async fn list_persistent_volume_claims(State(state): State<AppState>) -> imp
 pub async fn list_storage_classes(State(state): State<AppState>) -> impl IntoResponse {
     use k8s_openapi::api::storage::v1::StorageClass;
 
-    let api: Api<StorageClass> = Api::all(state.client);
+    let api: Api<StorageClass> = Api::all(state.kube_client().await);
     match api.list(&ListParams::default()).await {
         Ok(list) => {
             let items: Vec<StorageClassItem> = list
@@ -293,7 +293,7 @@ pub async fn get_persistentvolume_yaml(
 ) -> impl IntoResponse {
     use k8s_openapi::api::core::v1::PersistentVolume;
 
-    let api: Api<PersistentVolume> = Api::all(state.client);
+    let api: Api<PersistentVolume> = Api::all(state.kube_client().await);
     match api.get(&name).await {
         Ok(obj) => match serde_yaml::to_string(&obj) {
             Ok(yaml) => (
@@ -337,7 +337,7 @@ pub async fn update_persistentvolume_yaml(
 
     obj.metadata.name = Some(name.clone());
 
-    let api: Api<PersistentVolume> = Api::all(state.client);
+    let api: Api<PersistentVolume> = Api::all(state.kube_client().await);
     let patch_value = match serde_json::to_value(&obj) {
         Ok(v) => v,
         Err(err) => {
@@ -375,7 +375,7 @@ pub async fn delete_persistentvolume(
     State(state): State<AppState>,
 ) -> impl IntoResponse {
     use k8s_openapi::api::core::v1::PersistentVolume;
-    let api: Api<PersistentVolume> = Api::all(state.client);
+    let api: Api<PersistentVolume> = Api::all(state.kube_client().await);
     match api.delete(&name, &DeleteParams::default()).await {
         Ok(_) => {
             info!("Deleted persistentvolume {}", name);
@@ -394,7 +394,7 @@ pub async fn get_persistentvolumeclaim_yaml(
 ) -> impl IntoResponse {
     use k8s_openapi::api::core::v1::PersistentVolumeClaim;
 
-    let api: Api<PersistentVolumeClaim> = Api::namespaced(state.client, &namespace);
+    let api: Api<PersistentVolumeClaim> = Api::namespaced(state.kube_client().await, &namespace);
     match api.get(&name).await {
         Ok(obj) => match serde_yaml::to_string(&obj) {
             Ok(yaml) => (
@@ -442,7 +442,7 @@ pub async fn update_persistentvolumeclaim_yaml(
     obj.metadata.name = Some(name.clone());
     obj.metadata.namespace = Some(namespace.clone());
 
-    let api: Api<PersistentVolumeClaim> = Api::namespaced(state.client, &namespace);
+    let api: Api<PersistentVolumeClaim> = Api::namespaced(state.kube_client().await, &namespace);
     let patch_value = match serde_json::to_value(&obj) {
         Ok(v) => v,
         Err(err) => {
@@ -483,7 +483,7 @@ pub async fn delete_persistentvolumeclaim(
     State(state): State<AppState>,
 ) -> impl IntoResponse {
     use k8s_openapi::api::core::v1::PersistentVolumeClaim;
-    let api: Api<PersistentVolumeClaim> = Api::namespaced(state.client, &namespace);
+    let api: Api<PersistentVolumeClaim> = Api::namespaced(state.kube_client().await, &namespace);
     match api.delete(&name, &DeleteParams::default()).await {
         Ok(_) => {
             info!("Deleted persistentvolumeclaim {}/{}", namespace, name);
@@ -502,7 +502,7 @@ pub async fn get_storageclass_yaml(
 ) -> impl IntoResponse {
     use k8s_openapi::api::storage::v1::StorageClass;
 
-    let api: Api<StorageClass> = Api::all(state.client);
+    let api: Api<StorageClass> = Api::all(state.kube_client().await);
     match api.get(&name).await {
         Ok(obj) => match serde_yaml::to_string(&obj) {
             Ok(yaml) => (
@@ -546,7 +546,7 @@ pub async fn update_storageclass_yaml(
 
     obj.metadata.name = Some(name.clone());
 
-    let api: Api<StorageClass> = Api::all(state.client);
+    let api: Api<StorageClass> = Api::all(state.kube_client().await);
     let patch_value = match serde_json::to_value(&obj) {
         Ok(v) => v,
         Err(err) => {
@@ -584,7 +584,7 @@ pub async fn delete_storageclass(
     State(state): State<AppState>,
 ) -> impl IntoResponse {
     use k8s_openapi::api::storage::v1::StorageClass;
-    let api: Api<StorageClass> = Api::all(state.client);
+    let api: Api<StorageClass> = Api::all(state.kube_client().await);
     match api.delete(&name, &DeleteParams::default()).await {
         Ok(_) => {
             info!("Deleted storageclass {}", name);

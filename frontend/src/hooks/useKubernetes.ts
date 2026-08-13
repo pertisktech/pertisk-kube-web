@@ -65,6 +65,60 @@ const apiFetch = async (path: string) => {
   return res;
 };
 
+export interface ClusterStatus {
+  ok: boolean;
+  placeholder: boolean;
+  message?: string | null;
+  kubeconfig_path: string;
+  context?: string | null;
+  contexts: string[];
+}
+
+export const fetchClusterStatus = async (): Promise<ClusterStatus> => {
+  const res = await apiFetch('/cluster/status');
+  if (!res.ok) throw new Error('Failed to fetch cluster status');
+  return (await res.json()) as ClusterStatus;
+};
+
+export const uploadKubeconfig = async (
+  content: string,
+  context?: string,
+): Promise<{ success: boolean; message: string; context: string }> => {
+  const token = getAuthToken();
+  const res = await fetch(`${API_BASE}/cluster/kubeconfig`, {
+    method: 'POST',
+    headers: {
+      'Content-Type': 'application/json',
+      ...(token ? { Authorization: token } : {}),
+    },
+    body: JSON.stringify({ content, context }),
+  });
+  const payload = await res.json().catch(() => ({}));
+  if (!res.ok) {
+    throw new Error(payload?.message || `Failed to upload kubeconfig (${res.status})`);
+  }
+  return payload;
+};
+
+export const selectClusterContext = async (
+  context: string,
+): Promise<{ success: boolean; message: string; context: string }> => {
+  const token = getAuthToken();
+  const res = await fetch(`${API_BASE}/cluster/select`, {
+    method: 'POST',
+    headers: {
+      'Content-Type': 'application/json',
+      ...(token ? { Authorization: token } : {}),
+    },
+    body: JSON.stringify({ context }),
+  });
+  const payload = await res.json().catch(() => ({}));
+  if (!res.ok) {
+    throw new Error(payload?.message || `Failed to select context (${res.status})`);
+  }
+  return payload;
+};
+
 export const useNamespaces = () => {
   return useQuery({
     queryKey: ['namespaces'],

@@ -13,7 +13,7 @@ use crate::AppState;
 pub async fn list_namespaces(State(state): State<AppState>) -> impl IntoResponse {
     use k8s_openapi::api::core::v1::Namespace;
 
-    let api: Api<Namespace> = Api::all(state.client);
+    let api: Api<Namespace> = Api::all(state.kube_client().await);
     match api.list(&ListParams::default()).await {
         Ok(list) => {
             let items: Vec<NamespaceItem> = list
@@ -68,7 +68,7 @@ pub async fn delete_namespace(
     State(state): State<AppState>,
 ) -> impl IntoResponse {
     use k8s_openapi::api::core::v1::Namespace;
-    let api: Api<Namespace> = Api::all(state.client);
+    let api: Api<Namespace> = Api::all(state.kube_client().await);
     match api.delete(&name, &DeleteParams::default()).await {
         Ok(_) => {
             info!("Deleted namespace {}", name);

@@ -1,0 +1,27 @@
+[Unit]
+Description=Pertisk Kubernetes dashboard
+Documentation=https://github.com/pertisktech/pertisk-kube-web
+After=network.target
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=pertisk-kube
+Group=pertisk-kube
+WorkingDirectory=/var/lib/pertisk-kube
+EnvironmentFile=-/etc/pertisk-kube/pertisk-kube.conf
+ExecStart=/usr/bin/pertisk-kube
+Restart=always
+RestartSec=5
+TimeoutStopSec=30
+LimitNOFILE=65536
+ProtectSystem=strict
+ProtectHome=true
+ReadWritePaths=/var/lib/pertisk-kube /var/log/pertisk-kube
+ReadOnlyPaths=/etc/pertisk-kube
+PrivateTmp=true
+NoNewPrivileges=true
+
+[Install]
+WantedBy=multi-user.target

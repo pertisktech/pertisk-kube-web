@@ -35,6 +35,7 @@ GRPC_PORT ?= 50061
 .PHONY: helm-lint helm-package helm-push helm-release
 .PHONY: skaffold-run skaffold-run-talos skaffold-run-talos-hz skaffold-run-orion skaffold-run-orion-multi skaffold-run-orion-arm64 _skaffold-run skaffold-run-prod skaffold-dev skaffold-delete skaffold-build skaffold-build-multi
 .PHONY: release version
+.PHONY: build-rpm-amd64 package-rpm-amd64 package-rpm-x86_64
 
 # Development targets
 dev:
@@ -405,6 +406,13 @@ skaffold-delete:
 # Show current version from git
 version:
 	@echo "$(VERSION)"
+
+# ── RPM packaging (linux/amd64) ───────────────────────────────────────────────
+# Requires: docker (buildx cross-compile + fpm packaging container).
+# Output: release/pertisk-kube-<version>-1.x86_64.rpm (+ tarball)
+build-rpm-amd64 package-rpm-amd64 package-rpm-x86_64:
+	chmod +x build/package-rpm-amd64.sh build/rpm.sh
+	./build/package-rpm-amd64.sh "$(VERSION)"
 
 # Setup buildx for multi-platform builds (required for docker-build-multi on macOS/OrbStack)
 buildx-setup:

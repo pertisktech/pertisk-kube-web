@@ -13,7 +13,7 @@ use crate::AppState;
 pub async fn list_service_accounts(State(state): State<AppState>) -> impl IntoResponse {
     use k8s_openapi::api::core::v1::ServiceAccount;
 
-    let api: Api<ServiceAccount> = Api::all(state.client);
+    let api: Api<ServiceAccount> = Api::all(state.kube_client().await);
     match api.list(&ListParams::default()).await {
         Ok(list) => {
             let items: Vec<ServiceAccountItem> = list
@@ -73,7 +73,7 @@ pub async fn list_service_accounts(State(state): State<AppState>) -> impl IntoRe
 pub async fn list_roles(State(state): State<AppState>) -> impl IntoResponse {
     use k8s_openapi::api::rbac::v1::Role;
 
-    let api: Api<Role> = Api::all(state.client);
+    let api: Api<Role> = Api::all(state.kube_client().await);
     match api.list(&ListParams::default()).await {
         Ok(list) => {
             let items: Vec<RoleItem> = list
@@ -133,7 +133,7 @@ pub async fn list_roles(State(state): State<AppState>) -> impl IntoResponse {
 pub async fn list_role_bindings(State(state): State<AppState>) -> impl IntoResponse {
     use k8s_openapi::api::rbac::v1::RoleBinding;
 
-    let api: Api<RoleBinding> = Api::all(state.client);
+    let api: Api<RoleBinding> = Api::all(state.kube_client().await);
     match api.list(&ListParams::default()).await {
         Ok(list) => {
             let items: Vec<RoleBindingItem> = list
@@ -196,7 +196,7 @@ pub async fn list_role_bindings(State(state): State<AppState>) -> impl IntoRespo
 pub async fn list_cluster_roles(State(state): State<AppState>) -> impl IntoResponse {
     use k8s_openapi::api::rbac::v1::ClusterRole;
 
-    let api: Api<ClusterRole> = Api::all(state.client);
+    let api: Api<ClusterRole> = Api::all(state.kube_client().await);
     match api.list(&ListParams::default()).await {
         Ok(list) => {
             let items: Vec<ClusterRoleItem> = list
@@ -254,7 +254,7 @@ pub async fn list_cluster_roles(State(state): State<AppState>) -> impl IntoRespo
 pub async fn list_cluster_role_bindings(State(state): State<AppState>) -> impl IntoResponse {
     use k8s_openapi::api::rbac::v1::ClusterRoleBinding;
 
-    let api: Api<ClusterRoleBinding> = Api::all(state.client);
+    let api: Api<ClusterRoleBinding> = Api::all(state.kube_client().await);
     match api.list(&ListParams::default()).await {
         Ok(list) => {
             let items: Vec<ClusterRoleBindingItem> = list
@@ -318,7 +318,7 @@ pub async fn get_serviceaccount_yaml(
 ) -> impl IntoResponse {
     use k8s_openapi::api::core::v1::ServiceAccount;
 
-    let api: Api<ServiceAccount> = Api::namespaced(state.client, &namespace);
+    let api: Api<ServiceAccount> = Api::namespaced(state.kube_client().await, &namespace);
     match api.get(&name).await {
         Ok(obj) => match serde_yaml::to_string(&obj) {
             Ok(yaml) => (
@@ -366,7 +366,7 @@ pub async fn update_serviceaccount_yaml(
     obj.metadata.name = Some(name.clone());
     obj.metadata.namespace = Some(namespace.clone());
 
-    let api: Api<ServiceAccount> = Api::namespaced(state.client, &namespace);
+    let api: Api<ServiceAccount> = Api::namespaced(state.kube_client().await, &namespace);
     let patch_value = match serde_json::to_value(&obj) {
         Ok(v) => v,
         Err(err) => {
@@ -407,7 +407,7 @@ pub async fn delete_serviceaccount(
     State(state): State<AppState>,
 ) -> impl IntoResponse {
     use k8s_openapi::api::core::v1::ServiceAccount;
-    let api: Api<ServiceAccount> = Api::namespaced(state.client, &namespace);
+    let api: Api<ServiceAccount> = Api::namespaced(state.kube_client().await, &namespace);
     match api.delete(&name, &DeleteParams::default()).await {
         Ok(_) => {
             info!("Deleted serviceaccount {}/{}", namespace, name);
@@ -426,7 +426,7 @@ pub async fn get_role_yaml(
 ) -> impl IntoResponse {
     use k8s_openapi::api::rbac::v1::Role;
 
-    let api: Api<Role> = Api::namespaced(state.client, &namespace);
+    let api: Api<Role> = Api::namespaced(state.kube_client().await, &namespace);
     match api.get(&name).await {
         Ok(obj) => match serde_yaml::to_string(&obj) {
             Ok(yaml) => (
@@ -474,7 +474,7 @@ pub async fn update_role_yaml(
     obj.metadata.name = Some(name.clone());
     obj.metadata.namespace = Some(namespace.clone());
 
-    let api: Api<Role> = Api::namespaced(state.client, &namespace);
+    let api: Api<Role> = Api::namespaced(state.kube_client().await, &namespace);
     let patch_value = match serde_json::to_value(&obj) {
         Ok(v) => v,
         Err(err) => {
@@ -515,7 +515,7 @@ pub async fn delete_role(
     State(state): State<AppState>,
 ) -> impl IntoResponse {
     use k8s_openapi::api::rbac::v1::Role;
-    let api: Api<Role> = Api::namespaced(state.client, &namespace);
+    let api: Api<Role> = Api::namespaced(state.kube_client().await, &namespace);
     match api.delete(&name, &DeleteParams::default()).await {
         Ok(_) => {
             info!("Deleted role {}/{}", namespace, name);
@@ -534,7 +534,7 @@ pub async fn get_rolebinding_yaml(
 ) -> impl IntoResponse {
     use k8s_openapi::api::rbac::v1::RoleBinding;
 
-    let api: Api<RoleBinding> = Api::namespaced(state.client, &namespace);
+    let api: Api<RoleBinding> = Api::namespaced(state.kube_client().await, &namespace);
     match api.get(&name).await {
         Ok(obj) => match serde_yaml::to_string(&obj) {
             Ok(yaml) => (
@@ -582,7 +582,7 @@ pub async fn update_rolebinding_yaml(
     obj.metadata.name = Some(name.clone());
     obj.metadata.namespace = Some(namespace.clone());
 
-    let api: Api<RoleBinding> = Api::namespaced(state.client, &namespace);
+    let api: Api<RoleBinding> = Api::namespaced(state.kube_client().await, &namespace);
     let patch_value = match serde_json::to_value(&obj) {
         Ok(v) => v,
         Err(err) => {
@@ -623,7 +623,7 @@ pub async fn delete_rolebinding(
     State(state): State<AppState>,
 ) -> impl IntoResponse {
     use k8s_openapi::api::rbac::v1::RoleBinding;
-    let api: Api<RoleBinding> = Api::namespaced(state.client, &namespace);
+    let api: Api<RoleBinding> = Api::namespaced(state.kube_client().await, &namespace);
     match api.delete(&name, &DeleteParams::default()).await {
         Ok(_) => {
             info!("Deleted rolebinding {}/{}", namespace, name);
@@ -642,7 +642,7 @@ pub async fn get_clusterrole_yaml(
 ) -> impl IntoResponse {
     use k8s_openapi::api::rbac::v1::ClusterRole;
 
-    let api: Api<ClusterRole> = Api::all(state.client);
+    let api: Api<ClusterRole> = Api::all(state.kube_client().await);
     match api.get(&name).await {
         Ok(obj) => match serde_yaml::to_string(&obj) {
             Ok(yaml) => (
@@ -686,7 +686,7 @@ pub async fn update_clusterrole_yaml(
 
     obj.metadata.name = Some(name.clone());
 
-    let api: Api<ClusterRole> = Api::all(state.client);
+    let api: Api<ClusterRole> = Api::all(state.kube_client().await);
     let patch_value = match serde_json::to_value(&obj) {
         Ok(v) => v,
         Err(err) => {
@@ -724,7 +724,7 @@ pub async fn delete_clusterrole(
     State(state): State<AppState>,
 ) -> impl IntoResponse {
     use k8s_openapi::api::rbac::v1::ClusterRole;
-    let api: Api<ClusterRole> = Api::all(state.client);
+    let api: Api<ClusterRole> = Api::all(state.kube_client().await);
     match api.delete(&name, &DeleteParams::default()).await {
         Ok(_) => {
             info!("Deleted clusterrole {}", name);
@@ -743,7 +743,7 @@ pub async fn get_clusterrolebinding_yaml(
 ) -> impl IntoResponse {
     use k8s_openapi::api::rbac::v1::ClusterRoleBinding;
 
-    let api: Api<ClusterRoleBinding> = Api::all(state.client);
+    let api: Api<ClusterRoleBinding> = Api::all(state.kube_client().await);
     match api.get(&name).await {
         Ok(obj) => match serde_yaml::to_string(&obj) {
             Ok(yaml) => (
@@ -787,7 +787,7 @@ pub async fn update_clusterrolebinding_yaml(
 
     obj.metadata.name = Some(name.clone());
 
-    let api: Api<ClusterRoleBinding> = Api::all(state.client);
+    let api: Api<ClusterRoleBinding> = Api::all(state.kube_client().await);
     let patch_value = match serde_json::to_value(&obj) {
         Ok(v) => v,
         Err(err) => {
@@ -825,7 +825,7 @@ pub async fn delete_clusterrolebinding(
     State(state): State<AppState>,
 ) -> impl IntoResponse {
     use k8s_openapi::api::rbac::v1::ClusterRoleBinding;
-    let api: Api<ClusterRoleBinding> = Api::all(state.client);
+    let api: Api<ClusterRoleBinding> = Api::all(state.kube_client().await);
     match api.delete(&name, &DeleteParams::default()).await {
         Ok(_) => {
             info!("Deleted clusterrolebinding {}", name);

@@ -40,3 +40,12 @@ tmp/
 temp/
 certs/
 dist/
+
+# --- RPM / package build artifacts ---
+release/
+.build/
+.buildx-cache/
+pkg-pertisk-kube/
+preinstall.sh
+postinstall.sh
+preremove.sh

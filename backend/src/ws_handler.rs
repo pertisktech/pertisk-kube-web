@@ -826,7 +826,7 @@ async fn watch_pods(
     use k8s_openapi::api::core::v1::Pod;
     use kube::api::ListParams;
 
-    let api: Api<Pod> = Api::all(state.client.clone());
+    let api: Api<Pod> = Api::all(state.kube_client().await);
 
     // First, send all existing pods (excluding those marked for deletion)
     info!("Fetching initial pod list...");
@@ -968,7 +968,7 @@ macro_rules! create_watch_fn {
         ) {
             use kube::api::ListParams;
 
-            let api: Api<$resource_type> = Api::all(state.client.clone());
+            let api: Api<$resource_type> = Api::all(state.kube_client().await);
 
             // First, send all existing resources
             info!("Fetching initial {} list...", $resource_name);
@@ -1135,7 +1135,7 @@ async fn watch_dynamic_cluster_resource(
     ar: ApiResource,
     resource_name: &str,
 ) {
-    let api: Api<DynamicObject> = Api::all_with(state.client.clone(), &ar);
+    let api: Api<DynamicObject> = Api::all_with(state.kube_client().await, &ar);
     info!("Fetching initial {} list...", resource_name);
     match api.list(&ListParams::default()).await {
         Ok(list) => {
@@ -1229,7 +1229,7 @@ async fn watch_custom_resources(
     resource_name: &str,
     crd_name: &str,
 ) {
-    let crd_api: Api<CustomResourceDefinition> = Api::all(state.client.clone());
+    let crd_api: Api<CustomResourceDefinition> = Api::all(state.kube_client().await);
     let crd = match crd_api.get(crd_name).await {
         Ok(c) => c,
         Err(e) => {
@@ -1250,7 +1250,7 @@ async fn watch_custom_resources(
     let gvk = GroupVersionKind::gvk(&spec.group, &storage_version, &names.kind);
     let ar = ApiResource::from_gvk_with_plural(&gvk, &names.plural);
 
-    let api: Api<DynamicObject> = Api::all_with(state.client.clone(), &ar);
+    let api: Api<DynamicObject> = Api::all_with(state.kube_client().await, &ar);
     info!("Fetching initial custom resource list for {}...", resource_name);
     match api.list(&ListParams::default()).await {
         Ok(list) => {

@@ -53,7 +53,7 @@ fn parse_optional_quantity(value: &serde_json::Value) -> Option<f64> {
 async fn collect_workload_metric_totals(state: &AppState) -> WorkloadMetricTotals {
     let pod_metrics_resource =
         ApiResource::from_gvk(&GroupVersionKind::gvk("metrics.k8s.io", "v1beta1", "PodMetrics"));
-    let metrics_api: Api<DynamicObject> = Api::all_with(state.client.clone(), &pod_metrics_resource);
+    let metrics_api: Api<DynamicObject> = Api::all_with(state.kube_client().await, &pod_metrics_resource);
 
     let metrics_list = match metrics_api.list(&ListParams::default()).await {
         Ok(list) => list,
@@ -230,7 +230,7 @@ pub async fn get_workload_metric_series(
 pub async fn list_pods(State(state): State<AppState>) -> impl IntoResponse {
     use k8s_openapi::api::core::v1::Pod;
 
-    let client = state.client.clone();
+    let client = state.kube_client().await;
     let api: Api<Pod> = Api::all(client.clone());
     let pod_metrics = fetch_pod_metrics(client).await;
     match api.list(&ListParams::default()).await {
@@ -475,7 +475,7 @@ pub async fn list_pods(State(state): State<AppState>) -> impl IntoResponse {
 pub async fn list_nodes(State(state): State<AppState>) -> impl IntoResponse {
     use k8s_openapi::api::core::v1::Node;
 
-    let client = state.client.clone();
+    let client = state.kube_client().await;
     let api: Api<Node> = Api::all(client.clone());
     match api.list(&ListParams::default()).await {
         Ok(list) => {
@@ -814,7 +814,7 @@ fn sort_node_roles(roles: &mut Vec<String>) {
 pub async fn list_events(State(state): State<AppState>) -> impl IntoResponse {
     use k8s_openapi::api::core::v1::Event;
 
-    let api: Api<Event> = Api::all(state.client);
+    let api: Api<Event> = Api::all(state.kube_client().await);
     match api.list(&ListParams::default()).await {
         Ok(list) => {
             let items: Vec<EventItem> = list
@@ -850,8 +850,8 @@ pub async fn list_events(State(state): State<AppState>) -> impl IntoResponse {
 pub async fn list_deployments(State(state): State<AppState>) -> impl IntoResponse {
     use k8s_openapi::api::{apps::v1::Deployment, core::v1::Pod};
 
-    let deployment_api: Api<Deployment> = Api::all(state.client.clone());
-    let pod_api: Api<Pod> = Api::all(state.client);
+    let deployment_api: Api<Deployment> = Api::all(state.kube_client().await);
+    let pod_api: Api<Pod> = Api::all(state.kube_client().await);
 
     let deployment_list = match deployment_api.list(&ListParams::default()).await {
         Ok(list) => list,
@@ -1030,7 +1030,7 @@ pub async fn scale_deployment(
 ) -> impl IntoResponse {
     use k8s_openapi::api::apps::v1::Deployment;
 
-    let api: Api<Deployment> = Api::namespaced(state.client, &namespace);
+    let api: Api<Deployment> = Api::namespaced(state.kube_client().await, &namespace);
     
     match api.get(&name).await {
         Ok(mut deployment) => {
@@ -1065,7 +1065,7 @@ pub async fn restart_deployment(
 ) -> impl IntoResponse {
     use k8s_openapi::api::apps::v1::Deployment;
 
-    let api: Api<Deployment> = Api::namespaced(state.client, &namespace);
+    let api: Api<Deployment> = Api::namespaced(state.kube_client().await, &namespace);
     let restarted_at = Utc::now().to_rfc3339();
 
     let patch = serde_json::json!({
@@ -1190,7 +1190,7 @@ pub async fn update_deployment_image_tag(
             .into_response();
     }
 
-    let api: Api<Deployment> = Api::namespaced(state.client, &namespace);
+    let api: Api<Deployment> = Api::namespaced(state.kube_client().await, &namespace);
     let mut deployment = match api.get(&name).await {
         Ok(deployment) => deployment,
         Err(err) => {
@@ -1276,7 +1276,7 @@ pub async fn get_pod_yaml(
 ) -> impl IntoResponse {
     use k8s_openapi::api::core::v1::Pod;
 
-    let api: Api<Pod> = Api::namespaced(state.client, &namespace);
+    let api: Api<Pod> = Api::namespaced(state.kube_client().await, &namespace);
     match api.get(&name).await {
         Ok(pod) => match serde_yaml::to_string(&pod) {
             Ok(yaml) => (
@@ -1307,7 +1307,7 @@ pub async fn get_pod_logs(
     use k8s_openapi::api::core::v1::Pod;
     use kube::api::LogParams;
 
-    let api: Api<Pod> = Api::namespaced(state.client, &namespace);
+    let api: Api<Pod> = Api::namespaced(state.kube_client().await, &namespace);
     
     let log_params = LogParams {
         tail_lines: Some(1000),
@@ -1353,7 +1353,7 @@ pub async fn update_pod_yaml(
     pod.metadata.name = Some(name.clone());
     pod.metadata.namespace = Some(namespace.clone());
 
-    let api: Api<Pod> = Api::namespaced(state.client, &namespace);
+    let api: Api<Pod> = Api::namespaced(state.kube_client().await, &namespace);
     let patch_value = match serde_json::to_value(&pod) {
         Ok(value) => value,
         Err(err) => {
@@ -1395,7 +1395,7 @@ pub async fn get_deployment_yaml(
 ) -> impl IntoResponse {
     use k8s_openapi::api::apps::v1::Deployment;
 
-    let api: Api<Deployment> = Api::namespaced(state.client, &namespace);
+    let api: Api<Deployment> = Api::namespaced(state.kube_client().await, &namespace);
     match api.get(&name).await {
         Ok(deployment) => match serde_yaml::to_string(&deployment) {
             Ok(yaml) => (
@@ -1443,7 +1443,7 @@ pub async fn update_deployment_yaml(
     deployment.metadata.name = Some(name.clone());
     deployment.metadata.namespace = Some(namespace.clone());
 
-    let api: Api<Deployment> = Api::namespaced(state.client, &namespace);
+    let api: Api<Deployment> = Api::namespaced(state.kube_client().await, &namespace);
     let patch_value = match serde_json::to_value(&deployment) {
         Ok(value) => value,
         Err(err) => {
@@ -1485,7 +1485,7 @@ pub async fn get_statefulset_yaml(
 ) -> impl IntoResponse {
     use k8s_openapi::api::apps::v1::StatefulSet;
 
-    let api: Api<StatefulSet> = Api::namespaced(state.client, &namespace);
+    let api: Api<StatefulSet> = Api::namespaced(state.kube_client().await, &namespace);
     match api.get(&name).await {
         Ok(statefulset) => match serde_yaml::to_string(&statefulset) {
             Ok(yaml) => (
@@ -1533,7 +1533,7 @@ pub async fn update_statefulset_yaml(
     statefulset.metadata.name = Some(name.clone());
     statefulset.metadata.namespace = Some(namespace.clone());
 
-    let api: Api<StatefulSet> = Api::namespaced(state.client, &namespace);
+    let api: Api<StatefulSet> = Api::namespaced(state.kube_client().await, &namespace);
     let patch_value = match serde_json::to_value(&statefulset) {
         Ok(value) => value,
         Err(err) => {
@@ -1575,7 +1575,7 @@ pub async fn get_daemonset_yaml(
 ) -> impl IntoResponse {
     use k8s_openapi::api::apps::v1::DaemonSet;
 
-    let api: Api<DaemonSet> = Api::namespaced(state.client, &namespace);
+    let api: Api<DaemonSet> = Api::namespaced(state.kube_client().await, &namespace);
     match api.get(&name).await {
         Ok(daemonset) => match serde_yaml::to_string(&daemonset) {
             Ok(yaml) => (
@@ -1623,7 +1623,7 @@ pub async fn update_daemonset_yaml(
     daemonset.metadata.name = Some(name.clone());
     daemonset.metadata.namespace = Some(namespace.clone());
 
-    let api: Api<DaemonSet> = Api::namespaced(state.client, &namespace);
+    let api: Api<DaemonSet> = Api::namespaced(state.kube_client().await, &namespace);
     let patch_value = match serde_json::to_value(&daemonset) {
         Ok(value) => value,
         Err(err) => {
@@ -1665,7 +1665,7 @@ pub async fn get_job_yaml(
 ) -> impl IntoResponse {
     use k8s_openapi::api::batch::v1::Job;
 
-    let api: Api<Job> = Api::namespaced(state.client, &namespace);
+    let api: Api<Job> = Api::namespaced(state.kube_client().await, &namespace);
     match api.get(&name).await {
         Ok(job) => match serde_yaml::to_string(&job) {
             Ok(yaml) => (
@@ -1713,7 +1713,7 @@ pub async fn update_job_yaml(
     job.metadata.name = Some(name.clone());
     job.metadata.namespace = Some(namespace.clone());
 
-    let api: Api<Job> = Api::namespaced(state.client, &namespace);
+    let api: Api<Job> = Api::namespaced(state.kube_client().await, &namespace);
     let patch_value = match serde_json::to_value(&job) {
         Ok(value) => value,
         Err(err) => {
@@ -1755,7 +1755,7 @@ pub async fn get_cronjob_yaml(
 ) -> impl IntoResponse {
     use k8s_openapi::api::batch::v1::CronJob;
 
-    let api: Api<CronJob> = Api::namespaced(state.client, &namespace);
+    let api: Api<CronJob> = Api::namespaced(state.kube_client().await, &namespace);
     match api.get(&name).await {
         Ok(cronjob) => match serde_yaml::to_string(&cronjob) {
             Ok(yaml) => (
@@ -1803,7 +1803,7 @@ pub async fn update_cronjob_yaml(
     cronjob.metadata.name = Some(name.clone());
     cronjob.metadata.namespace = Some(namespace.clone());
 
-    let api: Api<CronJob> = Api::namespaced(state.client, &namespace);
+    let api: Api<CronJob> = Api::namespaced(state.kube_client().await, &namespace);
     let patch_value = match serde_json::to_value(&cronjob) {
         Ok(value) => value,
         Err(err) => {
@@ -1845,7 +1845,7 @@ pub async fn run_cronjob_now(
 ) -> impl IntoResponse {
     use k8s_openapi::api::batch::v1::{CronJob, Job};
 
-    let cronjobs: Api<CronJob> = Api::namespaced(state.client.clone(), &namespace);
+    let cronjobs: Api<CronJob> = Api::namespaced(state.kube_client().await, &namespace);
     let cronjob = match cronjobs.get(&name).await {
         Ok(cronjob) => cronjob,
         Err(kube::Error::Api(err)) if err.code == 404 => {
@@ -1906,7 +1906,7 @@ pub async fn run_cronjob_now(
         spec: cronjob_spec.job_template.spec.clone(),
         status: None,
     };
-    let jobs: Api<Job> = Api::namespaced(state.client, &namespace);
+    let jobs: Api<Job> = Api::namespaced(state.kube_client().await, &namespace);
 
     match jobs.create(&PostParams::default(), &job).await {
         Ok(created) => {
@@ -1948,7 +1948,7 @@ pub async fn run_cronjob_now(
 pub async fn list_statefulsets(State(state): State<AppState>) -> impl IntoResponse {
     use k8s_openapi::api::apps::v1::StatefulSet;
 
-    let api: Api<StatefulSet> = Api::all(state.client);
+    let api: Api<StatefulSet> = Api::all(state.kube_client().await);
     match api.list(&ListParams::default()).await {
         Ok(list) => {
             let items: Vec<StatefulSetItem> = list
@@ -2041,7 +2041,7 @@ pub async fn list_statefulsets(State(state): State<AppState>) -> impl IntoRespon
 pub async fn list_daemonsets(State(state): State<AppState>) -> impl IntoResponse {
     use k8s_openapi::api::apps::v1::DaemonSet;
 
-    let api: Api<DaemonSet> = Api::all(state.client);
+    let api: Api<DaemonSet> = Api::all(state.kube_client().await);
     match api.list(&ListParams::default()).await {
         Ok(list) => {
             let items: Vec<DaemonSetItem> = list
@@ -2148,7 +2148,7 @@ pub async fn list_daemonsets(State(state): State<AppState>) -> impl IntoResponse
 pub async fn list_replicasets(State(state): State<AppState>) -> impl IntoResponse {
     use k8s_openapi::api::apps::v1::ReplicaSet;
 
-    let api: Api<ReplicaSet> = Api::all(state.client);
+    let api: Api<ReplicaSet> = Api::all(state.kube_client().await);
     match api.list(&ListParams::default()).await {
         Ok(list) => {
             let items: Vec<ReplicaSetItem> = list
@@ -2242,7 +2242,7 @@ pub async fn get_replicaset_yaml(
 ) -> impl IntoResponse {
     use k8s_openapi::api::apps::v1::ReplicaSet;
 
-    let api: Api<ReplicaSet> = Api::namespaced(state.client, &namespace);
+    let api: Api<ReplicaSet> = Api::namespaced(state.kube_client().await, &namespace);
     match api.get(&name).await {
         Ok(replicaset) => match serde_yaml::to_string(&replicaset) {
             Ok(yaml) => (
@@ -2290,7 +2290,7 @@ pub async fn update_replicaset_yaml(
     replicaset.metadata.name = Some(name.clone());
     replicaset.metadata.namespace = Some(namespace.clone());
 
-    let api: Api<ReplicaSet> = Api::namespaced(state.client, &namespace);
+    let api: Api<ReplicaSet> = Api::namespaced(state.kube_client().await, &namespace);
     let patch_value = match serde_json::to_value(&replicaset) {
         Ok(value) => value,
         Err(err) => {
@@ -2329,7 +2329,7 @@ pub async fn update_replicaset_yaml(
 pub async fn list_jobs(State(state): State<AppState>) -> impl IntoResponse {
     use k8s_openapi::api::batch::v1::Job;
 
-    let api: Api<Job> = Api::all(state.client);
+    let api: Api<Job> = Api::all(state.kube_client().await);
     match api.list(&ListParams::default()).await {
         Ok(list) => {
             let items: Vec<JobItem> = list
@@ -2419,7 +2419,7 @@ pub async fn list_jobs(State(state): State<AppState>) -> impl IntoResponse {
 pub async fn list_cronjobs(State(state): State<AppState>) -> impl IntoResponse {
     use k8s_openapi::api::batch::v1::CronJob;
 
-    let api: Api<CronJob> = Api::all(state.client);
+    let api: Api<CronJob> = Api::all(state.kube_client().await);
     match api.list(&ListParams::default()).await {
         Ok(list) => {
             let items: Vec<CronJobItem> = list
@@ -2511,15 +2511,15 @@ pub async fn get_dashboard_summary(State(state): State<AppState>) -> impl IntoRe
         core::v1::{Event, Namespace, Pod},
     };
 
-    let namespaces_api: Api<Namespace> = Api::all(state.client.clone());
-    let pods_api: Api<Pod> = Api::all(state.client.clone());
-    let deployments_api: Api<Deployment> = Api::all(state.client.clone());
-    let statefulsets_api: Api<StatefulSet> = Api::all(state.client.clone());
-    let daemonsets_api: Api<DaemonSet> = Api::all(state.client.clone());
-    let replicasets_api: Api<ReplicaSet> = Api::all(state.client.clone());
-    let jobs_api: Api<Job> = Api::all(state.client.clone());
-    let cronjobs_api: Api<CronJob> = Api::all(state.client.clone());
-    let events_api: Api<Event> = Api::all(state.client.clone());
+    let namespaces_api: Api<Namespace> = Api::all(state.kube_client().await);
+    let pods_api: Api<Pod> = Api::all(state.kube_client().await);
+    let deployments_api: Api<Deployment> = Api::all(state.kube_client().await);
+    let statefulsets_api: Api<StatefulSet> = Api::all(state.kube_client().await);
+    let daemonsets_api: Api<DaemonSet> = Api::all(state.kube_client().await);
+    let replicasets_api: Api<ReplicaSet> = Api::all(state.kube_client().await);
+    let jobs_api: Api<Job> = Api::all(state.kube_client().await);
+    let cronjobs_api: Api<CronJob> = Api::all(state.kube_client().await);
+    let events_api: Api<Event> = Api::all(state.kube_client().await);
 
     let result = async {
         let namespaces = namespaces_api.list(&ListParams::default()).await?.items.len();
@@ -2533,7 +2533,7 @@ pub async fn get_dashboard_summary(State(state): State<AppState>) -> impl IntoRe
         let events = events_api.list(&ListParams::default()).await?.items.len();
 
         // Get cluster version info
-        let kube_version = state.client.apiserver_version().await.ok().map(|v| v.git_version);
+        let kube_version = state.kube_client().await.apiserver_version().await.ok().map(|v| v.git_version);
         
         // Try to get cluster name from kubeconfig or default
         let cluster_name = Some(env::var("CLUSTER_NAME").unwrap_or_else(|_| {
@@ -2583,7 +2583,7 @@ pub async fn delete_pod(
     State(state): State<AppState>,
 ) -> impl IntoResponse {
     use k8s_openapi::api::core::v1::Pod;
-    let api: Api<Pod> = Api::namespaced(state.client, &namespace);
+    let api: Api<Pod> = Api::namespaced(state.kube_client().await, &namespace);
     match api.delete(&name, &DeleteParams::default()).await {
         Ok(_) => {
             info!("Deleted pod {}/{}", namespace, name);
@@ -2601,7 +2601,7 @@ pub async fn delete_deployment(
     State(state): State<AppState>,
 ) -> impl IntoResponse {
     use k8s_openapi::api::apps::v1::Deployment;
-    let api: Api<Deployment> = Api::namespaced(state.client, &namespace);
+    let api: Api<Deployment> = Api::namespaced(state.kube_client().await, &namespace);
     match api.delete(&name, &DeleteParams::default()).await {
         Ok(_) => {
             info!("Deleted deployment {}/{}", namespace, name);
@@ -2619,7 +2619,7 @@ pub async fn delete_statefulset(
     State(state): State<AppState>,
 ) -> impl IntoResponse {
     use k8s_openapi::api::apps::v1::StatefulSet;
-    let api: Api<StatefulSet> = Api::namespaced(state.client, &namespace);
+    let api: Api<StatefulSet> = Api::namespaced(state.kube_client().await, &namespace);
     match api.delete(&name, &DeleteParams::default()).await {
         Ok(_) => {
             info!("Deleted statefulset {}/{}", namespace, name);
@@ -2637,7 +2637,7 @@ pub async fn delete_daemonset(
     State(state): State<AppState>,
 ) -> impl IntoResponse {
     use k8s_openapi::api::apps::v1::DaemonSet;
-    let api: Api<DaemonSet> = Api::namespaced(state.client, &namespace);
+    let api: Api<DaemonSet> = Api::namespaced(state.kube_client().await, &namespace);
     match api.delete(&name, &DeleteParams::default()).await {
         Ok(_) => {
             info!("Deleted daemonset {}/{}", namespace, name);
@@ -2655,7 +2655,7 @@ pub async fn delete_replicaset(
     State(state): State<AppState>,
 ) -> impl IntoResponse {
     use k8s_openapi::api::apps::v1::ReplicaSet;
-    let api: Api<ReplicaSet> = Api::namespaced(state.client, &namespace);
+    let api: Api<ReplicaSet> = Api::namespaced(state.kube_client().await, &namespace);
     match api.delete(&name, &DeleteParams::default()).await {
         Ok(_) => {
             info!("Deleted replicaset {}/{}", namespace, name);
@@ -2673,7 +2673,7 @@ pub async fn delete_job(
     State(state): State<AppState>,
 ) -> impl IntoResponse {
     use k8s_openapi::api::batch::v1::Job;
-    let api: Api<Job> = Api::namespaced(state.client, &namespace);
+    let api: Api<Job> = Api::namespaced(state.kube_client().await, &namespace);
     match api.delete(&name, &DeleteParams::default()).await {
         Ok(_) => {
             info!("Deleted job {}/{}", namespace, name);
@@ -2691,7 +2691,7 @@ pub async fn delete_cronjob(
     State(state): State<AppState>,
 ) -> impl IntoResponse {
     use k8s_openapi::api::batch::v1::CronJob;
-    let api: Api<CronJob> = Api::namespaced(state.client, &namespace);
+    let api: Api<CronJob> = Api::namespaced(state.kube_client().await, &namespace);
     match api.delete(&name, &DeleteParams::default()).await {
         Ok(_) => {
             info!("Deleted cronjob {}/{}", namespace, name);
@@ -2709,7 +2709,7 @@ pub async fn get_node_yaml(
     State(state): State<AppState>,
 ) -> impl IntoResponse {
     use k8s_openapi::api::core::v1::Node;
-    let api: Api<Node> = Api::all(state.client);
+    let api: Api<Node> = Api::all(state.kube_client().await);
     match api.get(&name).await {
         Ok(node) => {
             // Convert node to JSON value for filtering
@@ -2756,7 +2756,7 @@ pub async fn update_node_yaml(
     body: String,
 ) -> impl IntoResponse {
     use k8s_openapi::api::core::v1::Node;
-    let api: Api<Node> = Api::all(state.client);
+    let api: Api<Node> = Api::all(state.kube_client().await);
     let parsed: serde_json::Value = match serde_yaml::from_str(&body) {
         Ok(value) => value,
         Err(err) => {
@@ -2795,7 +2795,7 @@ pub async fn delete_node(
     State(state): State<AppState>,
 ) -> impl IntoResponse {
     use k8s_openapi::api::core::v1::Node;
-    let api: Api<Node> = Api::all(state.client);
+    let api: Api<Node> = Api::all(state.kube_client().await);
     match api.delete(&name, &DeleteParams::default()).await {
         Ok(_) => {
             info!("Deleted node {}", name);
@@ -2813,7 +2813,7 @@ pub async fn cordon_node(
     State(state): State<AppState>,
 ) -> impl IntoResponse {
     use k8s_openapi::api::core::v1::Node;
-    let api: Api<Node> = Api::all(state.client);
+    let api: Api<Node> = Api::all(state.kube_client().await);
     let patch = serde_json::json!({ "spec": { "unschedulable": true } });
     match api
         .patch(&name, &PatchParams::default(), &Patch::Merge(patch))
@@ -2835,7 +2835,7 @@ pub async fn uncordon_node(
     State(state): State<AppState>,
 ) -> impl IntoResponse {
     use k8s_openapi::api::core::v1::Node;
-    let api: Api<Node> = Api::all(state.client);
+    let api: Api<Node> = Api::all(state.kube_client().await);
     let patch = serde_json::json!({ "spec": { "unschedulable": false } });
     match api
         .patch(&name, &PatchParams::default(), &Patch::Merge(patch))
@@ -2860,7 +2860,7 @@ pub async fn drain_node(
     use std::process::Command as SysCommand;
 
     // First cordon the node via the k8s API
-    let api: Api<Node> = Api::all(state.client);
+    let api: Api<Node> = Api::all(state.kube_client().await);
     let patch = serde_json::json!({ "spec": { "unschedulable": true } });
     if let Err(err) = api
         .patch(&name, &PatchParams::default(), &Patch::Merge(patch))
@@ -2973,7 +2973,7 @@ pub async fn apply_yaml(
     };
 
     // Run API discovery to resolve the GroupVersionKind to an ApiResource
-    let discovery = match Discovery::new(state.client.clone()).run().await {
+    let discovery = match Discovery::new(state.kube_client().await).run().await {
         Ok(d) => d,
         Err(err) => {
             error!("API discovery failed: {:?}", err);
@@ -3023,7 +3023,7 @@ pub async fn apply_yaml(
 
     if caps.scope == Scope::Namespaced {
         let ns = namespace.as_deref().unwrap_or("default");
-        let api: Api<DynamicObject> = Api::namespaced_with(state.client.clone(), ns, &ar);
+        let api: Api<DynamicObject> = Api::namespaced_with(state.kube_client().await, ns, &ar);
         match api
             .patch(&name, &patch_params, &Patch::Apply(dynamic_obj))
             .await
@@ -3046,7 +3046,7 @@ pub async fn apply_yaml(
             }
         }
     } else {
-        let api: Api<DynamicObject> = Api::all_with(state.client.clone(), &ar);
+        let api: Api<DynamicObject> = Api::all_with(state.kube_client().await, &ar);
         match api
             .patch(&name, &patch_params, &Patch::Apply(dynamic_obj))
             .await

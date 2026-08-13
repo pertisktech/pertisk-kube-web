@@ -1,12 +1,16 @@
-use axum::http::Request;
+use axum::http::{Request, Uri};
 use futures_util::future::join_all;
 use kube::{
     api::ListParams,
+    config::{KubeConfigOptions, Kubeconfig},
     core::{ApiResource, DynamicObject, GroupVersionKind},
-    Api, Client,
+    Api, Client, Config,
 };
 use std::collections::HashMap;
+use std::env;
+use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicI8, Ordering};
+use tokio::time::{timeout, Duration};
 use tracing::warn;
 
 // 0 = unknown, 1 = available, -1 = unavailable
@@ -321,3 +325,335 @@ pub async fn fetch_node_disk_metrics(
 
     responses.into_iter().flatten().collect()
 }
+
+// ─── Placeholder / dynamic kube client loading ───────────────────────────────
+
+const EXEC_PROVIDER_LOAD_TIMEOUT: Duration = Duration::from_secs(25);
+const EXEC_PROVIDER_RESOLVE_TIMEOUT: Duration = Duration::from_secs(8);
+const EXEC_PROVIDER_BACKGROUND_TIMEOUT: Duration = Duration::from_secs(60);
+
+#[derive(Clone, Debug, Default)]
+pub struct KubeClientStatus {
+    pub is_placeholder: bool,
+    pub user_message: Option<String>,
+}
+
+pub fn default_kubeconfig_path() -> PathBuf {
+    if let Ok(raw) = env::var("KUBECONFIG") {
+        if let Some(first) = raw
+            .split(':')
+            .map(str::trim)
+            .find(|segment| !segment.is_empty())
+        {
+            return PathBuf::from(first);
+        }
+    }
+
+    if let Ok(home) = env::var("HOME") {
+        if !home.trim().is_empty() {
+            return PathBuf::from(home).join(".kube/config");
+        }
+    }
+
+    PathBuf::from("/var/lib/pertisk-kube/kubeconfig")
+}
+
+fn has_accessible_kubeconfig() -> bool {
+    let configured_paths = env::var("KUBECONFIG")
+        .ok()
+        .map(|raw| {
+            raw.split(':')
+                .map(str::trim)
+                .filter(|segment| !segment.is_empty())
+                .map(PathBuf::from)
+                .collect::<Vec<_>>()
+        })
+        .unwrap_or_default();
+
+    if !configured_paths.is_empty() {
+        return configured_paths.iter().any(|path| path.exists());
+    }
+
+    default_kubeconfig_path().exists()
+}
+
+fn default_placeholder_user_message() -> String {
+    let has_incluster_env = env::var("KUBERNETES_SERVICE_HOST").is_ok()
+        && env::var("KUBERNETES_SERVICE_PORT").is_ok();
+
+    if !has_incluster_env && !has_accessible_kubeconfig() {
+        return "No Kubernetes cluster configuration found. Upload a kubeconfig to connect.".to_string();
+    }
+
+    "Kubernetes credentials are not available. Check your kubeconfig/context and re-authenticate.".to_string()
+}
+
+fn read_kubeconfig_from_path(path: &Path) -> anyhow::Result<Kubeconfig> {
+    Kubeconfig::read_from(path).map_err(|e| anyhow::anyhow!("failed to read kubeconfig {}: {e}", path.display()))
+}
+
+fn read_effective_kubeconfig() -> anyhow::Result<Kubeconfig> {
+    let configured_paths = env::var_os("KUBECONFIG")
+        .map(|raw| {
+            env::split_paths(&raw)
+                .filter(|p| p.exists())
+                .collect::<Vec<PathBuf>>()
+        })
+        .unwrap_or_default();
+
+    if let Some(path) = configured_paths.first() {
+        return read_kubeconfig_from_path(path);
+    }
+
+    let default_path = default_kubeconfig_path();
+    if default_path.exists() {
+        return read_kubeconfig_from_path(&default_path);
+    }
+
+    Kubeconfig::read().map_err(|e| anyhow::anyhow!("failed to read default kubeconfig: {e}"))
+}
+
+pub fn list_kubeconfig_contexts_from_path(path: &Path) -> anyhow::Result<(Vec<String>, Option<String>)> {
+    let kc = read_kubeconfig_from_path(path)?;
+    let contexts = kc.contexts.iter().map(|c| c.name.clone()).collect::<Vec<_>>();
+    Ok((contexts, kc.current_context.clone()))
+}
+
+fn resolve_effective_kube_context() -> Option<String> {
+    if let Some(ctx) = env::var("KUBE_CONTEXT").ok().filter(|s| !s.trim().is_empty()) {
+        return Some(ctx);
+    }
+
+    read_effective_kubeconfig()
+        .ok()
+        .and_then(|kc| kc.current_context.clone())
+        .filter(|s| !s.trim().is_empty())
+}
+
+/// True when a kubeconfig/context is already present (background upgrade may succeed later).
+pub fn has_resolvable_kube_context() -> bool {
+    resolve_effective_kube_context().is_some()
+}
+
+fn placeholder_status_for_context(_context_name: Option<&str>) -> KubeClientStatus {
+    KubeClientStatus {
+        is_placeholder: true,
+        user_message: Some(default_placeholder_user_message()),
+    }
+}
+
+fn is_missing_exec_error(message: &str) -> bool {
+    let err_text = message.to_lowercase();
+    err_text.contains("unable to run auth exec")
+        || err_text.contains("no such file or directory")
+        || (err_text.contains("auth exec") && err_text.contains("os error 2"))
+}
+
+async fn try_build_client_from_config(cfg: Config) -> Result<Client, String> {
+    tokio::task::spawn_blocking(move || Client::try_from(cfg).map_err(|e| e.to_string()))
+        .await
+        .map_err(|e| format!("client build task failed: {e}"))?
+}
+
+async fn try_build_client_from_options(options: &KubeConfigOptions) -> Result<Client, String> {
+    let cfg = Config::from_kubeconfig(options)
+        .await
+        .map_err(|e| e.to_string())?;
+    try_build_client_from_config(cfg).await
+}
+
+async fn try_load_client_for_context_with_timeout(
+    ctx: &str,
+    load_timeout: Duration,
+    _resolve_timeout: Duration,
+) -> Option<Client> {
+    let options = KubeConfigOptions {
+        context: Some(ctx.to_string()),
+        ..Default::default()
+    };
+
+    match timeout(load_timeout, try_build_client_from_options(&options)).await {
+        Ok(Ok(client)) => Some(client),
+        Ok(Err(e)) => {
+            if !is_missing_exec_error(&e) {
+                warn!(
+                    "Kubernetes client init failed for context '{}': {}. Exec credential may be unavailable.",
+                    ctx, e
+                );
+            }
+            None
+        }
+        Err(_) => {
+            warn!(
+                "Kubernetes client init timed out (>{} s) for context '{}'.",
+                EXEC_PROVIDER_LOAD_TIMEOUT.as_secs(),
+                ctx
+            );
+            None
+        }
+    }
+}
+
+async fn try_load_client_for_context(ctx: &str) -> Option<Client> {
+    try_load_client_for_context_with_timeout(
+        ctx,
+        EXEC_PROVIDER_LOAD_TIMEOUT,
+        EXEC_PROVIDER_RESOLVE_TIMEOUT,
+    )
+    .await
+}
+
+pub async fn upgrade_kube_client_in_background(
+    client: std::sync::Arc<tokio::sync::RwLock<Client>>,
+    auth_placeholder: std::sync::Arc<std::sync::atomic::AtomicBool>,
+    auth_message: std::sync::Arc<tokio::sync::RwLock<Option<String>>>,
+) {
+    use std::sync::atomic::Ordering;
+    use tracing::info;
+
+    const MAX_ATTEMPTS: u32 = 18;
+    const RETRY_INTERVAL: Duration = Duration::from_secs(10);
+
+    for attempt in 1..=MAX_ATTEMPTS {
+        if !auth_placeholder.load(Ordering::Relaxed) {
+            return;
+        }
+
+        tokio::time::sleep(RETRY_INTERVAL).await;
+
+        let Some(ctx) = resolve_effective_kube_context() else {
+            continue;
+        };
+
+        if let Some(upgraded) = try_load_client_for_context_with_timeout(
+            &ctx,
+            EXEC_PROVIDER_BACKGROUND_TIMEOUT,
+            EXEC_PROVIDER_RESOLVE_TIMEOUT,
+        )
+        .await
+        {
+            *client.write().await = upgraded;
+            auth_placeholder.store(false, Ordering::Relaxed);
+            *auth_message.write().await = None;
+            info!(
+                "Kubernetes client upgraded from placeholder for context '{}'",
+                ctx
+            );
+            return;
+        }
+
+        warn!(
+            "Background Kubernetes credential upgrade attempt {}/{} failed for context '{}'",
+            attempt, MAX_ATTEMPTS, ctx
+        );
+    }
+}
+
+/// Returns `(client, status)`. Starts with a placeholder when kubeconfig/creds are missing.
+pub async fn load_kube_client_with_status() -> anyhow::Result<(Client, KubeClientStatus)> {
+    let context = resolve_effective_kube_context();
+
+    if let Some(ref ctx) = context {
+        if let Some(client) = try_load_client_for_context(ctx).await {
+            return Ok((client, KubeClientStatus::default()));
+        }
+
+        return build_placeholder_client(Some(ctx))
+            .await
+            .map(|client| (client, placeholder_status_for_context(Some(ctx))));
+    }
+
+    warn!("No Kubernetes context configured; starting with placeholder client.");
+    build_placeholder_client(None)
+        .await
+        .map(|client| (client, placeholder_status_for_context(None)))
+}
+
+pub async fn build_client_from_kubeconfig_path(
+    path: &Path,
+    context: Option<&str>,
+) -> anyhow::Result<(Client, String)> {
+    let kc = read_kubeconfig_from_path(path)?;
+    let selected_context = context
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .map(str::to_string)
+        .or_else(|| kc.current_context.clone())
+        .ok_or_else(|| anyhow::anyhow!("kubeconfig has no current-context; select a context"))?;
+
+    if !kc.contexts.iter().any(|c| c.name == selected_context) {
+        return Err(anyhow::anyhow!(
+            "context '{}' was not found in {}",
+            selected_context,
+            path.display()
+        ));
+    }
+
+    let options = KubeConfigOptions {
+        context: Some(selected_context.clone()),
+        ..Default::default()
+    };
+    let cfg = Config::from_custom_kubeconfig(kc, &options)
+        .await
+        .map_err(|e| anyhow::anyhow!("failed to load kubeconfig: {e}"))?;
+    let client = try_build_client_from_config(cfg)
+        .await
+        .map_err(|e| anyhow::anyhow!("failed to build Kubernetes client: {e}"))?;
+    Ok((client, selected_context))
+}
+
+async fn build_placeholder_client(context_name: Option<&str>) -> anyhow::Result<Client> {
+    let mut kubeconfig = read_effective_kubeconfig();
+
+    if let Ok(ref mut kc) = kubeconfig {
+        let user_name: Option<String> = {
+            let ctx_name = context_name.or_else(|| kc.current_context.as_deref());
+            ctx_name.and_then(|n| {
+                kc.contexts
+                    .iter()
+                    .find(|c| c.name == n)
+                    .and_then(|c| c.context.as_ref())
+                    .map(|c| c.user.clone())
+            })
+        };
+
+        if let Some(ref uname) = user_name {
+            for named_auth in &mut kc.auth_infos {
+                if named_auth.name == *uname {
+                    if let Some(ref mut ai) = named_auth.auth_info {
+                        ai.exec = None;
+                    }
+                }
+            }
+        }
+
+        let options = KubeConfigOptions {
+            context: context_name.map(String::from),
+            ..Default::default()
+        };
+
+        if let Ok(mut cfg) = Config::from_custom_kubeconfig(kc.clone(), &options).await {
+            cfg.accept_invalid_certs = true;
+            if let Ok(client) = Client::try_from(cfg) {
+                warn!(
+                    "Started with UNAUTHENTICATED placeholder client for context '{}'",
+                    context_name.unwrap_or("<default>")
+                );
+                return Ok(client);
+            }
+        }
+    }
+
+    let uri = "http://127.0.0.1:6443"
+        .parse::<Uri>()
+        .expect("hardcoded valid URI");
+    let cfg = Config::new(uri);
+    let client = Client::try_from(cfg)
+        .map_err(|e| anyhow::anyhow!("Fallback placeholder client creation failed: {}", e))?;
+    warn!(
+        "Started with minimal localhost placeholder client for context '{}'",
+        context_name.unwrap_or("<default>")
+    );
+    Ok(client)
+}
+

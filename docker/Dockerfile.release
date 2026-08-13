@@ -1,0 +1,58 @@
+# Cross-compile pertisk-kube for Linux packaging (amd64/arm64 via buildx).
+# Usage:
+#   docker buildx build --platform linux/amd64 -f docker/Dockerfile.release \
+#     --target artifacts -o type=local,dest=./out .
+
+ARG TARGETPLATFORM=linux/amd64
+ARG BUILDPLATFORM=linux/amd64
+ARG TARGETARCH=amd64
+ARG VERSION=0.1.0
+
+# ─── Frontend ────────────────────────────────────────────────────────────────
+FROM --platform=$BUILDPLATFORM node:20-alpine AS frontend-builder
+ARG VERSION
+WORKDIR /app/frontend
+
+COPY frontend/package.json frontend/package-lock.json* ./
+RUN npm ci --prefer-offline --no-audit --no-fund
+
+COPY frontend/tsconfig.json frontend/tsconfig.node.json ./
+COPY frontend/vite.config.mts frontend/postcss.config.js frontend/tailwind.config.js ./
+COPY frontend/index.html ./
+COPY frontend/src ./src
+COPY frontend/public ./public
+
+RUN VITE_APP_VERSION=${VERSION} npm run build
+
+# ─── Backend ─────────────────────────────────────────────────────────────────
+FROM --platform=$TARGETPLATFORM rust:alpine AS backend-builder
+ARG VERSION
+WORKDIR /app
+
+RUN apk add --no-cache \
+    build-base \
+    pkgconfig \
+    openssl-dev \
+    openssl-libs-static \
+    protobuf-dev
+
+COPY Cargo.toml Cargo.lock ./
+COPY backend/Cargo.toml ./backend/Cargo.toml
+COPY backend/build.rs ./backend/build.rs
+COPY proto ./proto
+
+RUN mkdir -p backend/src \
+    && echo "fn main() {}" > backend/src/main.rs \
+    && cargo build --release --bin pertisk-kube-backend \
+    && find target/release -maxdepth 1 -name 'pertisk-kube-backend*' -delete 2>/dev/null || true \
+    && find target/release/.fingerprint -name 'pertisk-kube-backend-*' -exec rm -rf {} + 2>/dev/null || true
+
+COPY backend/src ./backend/src
+RUN touch backend/src/main.rs \
+    && cargo build --release --bin pertisk-kube-backend \
+    && install -m 0755 target/release/pertisk-kube-backend /tmp/pertisk-kube
+
+# ─── Export artifacts for buildx -o type=local ───────────────────────────────
+FROM scratch AS artifacts
+COPY --from=backend-builder /tmp/pertisk-kube /pertisk-kube
+COPY --from=frontend-builder /app/frontend/dist /static

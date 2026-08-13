@@ -17,12 +17,12 @@ use crate::proto::kubernetes::{
 type WatcherHandle = tokio::task::JoinHandle<()>;
 
 pub struct KubernetesWatchService {
-    kube_client: kube::Client,
+    kube_client: Arc<RwLock<kube::Client>>,
     active_connections: Arc<RwLock<HashMap<String, Vec<WatcherHandle>>>>,
 }
 
 impl KubernetesWatchService {
-    pub fn new(kube_client: kube::Client) -> Self {
+    pub fn new(kube_client: Arc<RwLock<kube::Client>>) -> Self {
         Self {
             kube_client,
             active_connections: Arc::new(RwLock::new(HashMap::new())),
@@ -31,6 +31,10 @@ impl KubernetesWatchService {
 
     pub fn into_server(self) -> KubernetesWatchServer<Self> {
         KubernetesWatchServer::new(self)
+    }
+
+    async fn current_client(&self) -> kube::Client {
+        self.kube_client.read().await.clone()
     }
 }
 
@@ -45,7 +49,7 @@ impl KubernetesWatch for KubernetesWatchService {
     ) -> Result<Response<Self::WatchResourcesStream>, Status> {
         let mut in_stream = request.into_inner();
         let (tx, rx) = mpsc::channel(256);
-        let kube_client = self.kube_client.clone();
+        let kube_client = self.current_client().await;
         let connection_id = uuid::Uuid::new_v4().to_string();
         let active_connections = self.active_connections.clone();
 
@@ -185,18 +189,19 @@ impl KubernetesWatch for KubernetesWatchService {
 
         info!("List request: {:?}", resource_type);
 
+        let client = self.current_client().await;
         match resource_type {
-            ResourceType::Pods => list_pods(&self.kube_client, req.namespace).await,
-            ResourceType::Deployments => list_deployments(&self.kube_client, req.namespace).await,
-            ResourceType::Services => list_services(&self.kube_client, req.namespace).await,
-            ResourceType::Nodes => list_nodes(&self.kube_client).await,
-            ResourceType::Events => list_events(&self.kube_client, req.namespace).await,
-            ResourceType::Statefulsets => list_statefulsets(&self.kube_client, req.namespace).await,
-            ResourceType::Daemonsets => list_daemonsets(&self.kube_client, req.namespace).await,
-            ResourceType::Jobs => list_jobs(&self.kube_client, req.namespace).await,
-            ResourceType::Cronjobs => list_cronjobs(&self.kube_client, req.namespace).await,
-            ResourceType::Replicasets => list_replicasets(&self.kube_client, req.namespace).await,
-            ResourceType::Namespaces => list_namespaces(&self.kube_client).await,
+            ResourceType::Pods => list_pods(&client, req.namespace).await,
+            ResourceType::Deployments => list_deployments(&client, req.namespace).await,
+            ResourceType::Services => list_services(&client, req.namespace).await,
+            ResourceType::Nodes => list_nodes(&client).await,
+            ResourceType::Events => list_events(&client, req.namespace).await,
+            ResourceType::Statefulsets => list_statefulsets(&client, req.namespace).await,
+            ResourceType::Daemonsets => list_daemonsets(&client, req.namespace).await,
+            ResourceType::Jobs => list_jobs(&client, req.namespace).await,
+            ResourceType::Cronjobs => list_cronjobs(&client, req.namespace).await,
+            ResourceType::Replicasets => list_replicasets(&client, req.namespace).await,
+            ResourceType::Namespaces => list_namespaces(&client).await,
             ResourceType::Unspecified => {
                 Err(Status::invalid_argument("Resource type is required"))
             }
@@ -208,7 +213,7 @@ impl KubernetesWatch for KubernetesWatchService {
         _request: Request<HealthRequest>,
     ) -> Result<Response<HealthResponse>, Status> {
         // Check K8s API connectivity
-        match self.kube_client.apiserver_version().await {
+        match self.current_client().await.apiserver_version().await {
             Ok(_) => Ok(Response::new(HealthResponse {
                 healthy: true,
                 status: "OK".to_string(),

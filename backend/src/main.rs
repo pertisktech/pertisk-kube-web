@@ -9,7 +9,15 @@ use axum::{
     Json, Router,
 };
 use kube::Client;
-use std::{env, net::SocketAddr, path::PathBuf, sync::Arc};
+use std::{
+    env,
+    net::SocketAddr,
+    path::PathBuf,
+    sync::{
+        atomic::{AtomicBool, Ordering},
+        Arc,
+    },
+};
 use tokio::sync::RwLock;
 use tower_http::{
     cors::{Any, CorsLayer},
@@ -31,6 +39,7 @@ pub mod utils;
 use auth::{login, refresh_token, require_basic_auth};
 use handlers::{
     backup::*,
+    cluster::*,
     config::*,
     crd::*,
     helm::*,
@@ -46,12 +55,30 @@ use models::*;
 
 #[derive(Clone)]
 pub struct AppState {
-    pub client: Client,
+    pub client: Arc<RwLock<Client>>,
     pub username: String,
     pub password: String,
     pub jwt_secret: String,
     pub port_forward_state: Option<Arc<handlers::portforward::PortForwardState>>,
     pub workload_metric_history: Arc<RwLock<Vec<WorkloadMetricSnapshot>>>,
+    pub auth_placeholder: Arc<AtomicBool>,
+    pub auth_message: Arc<RwLock<Option<String>>>,
+    pub current_context: Arc<RwLock<Option<String>>>,
+    pub kubeconfig_path: Arc<RwLock<String>>,
+}
+
+impl AppState {
+    pub async fn kube_client(&self) -> Client {
+        self.client.read().await.clone()
+    }
+
+    pub fn is_auth_placeholder(&self) -> bool {
+        self.auth_placeholder.load(Ordering::Relaxed)
+    }
+
+    pub async fn auth_user_message(&self) -> Option<String> {
+        self.auth_message.read().await.clone()
+    }
 }
 
 #[tokio::main]
@@ -65,21 +92,50 @@ async fn main() -> anyhow::Result<()> {
         .with_env_filter(env_filter)
         .init();
 
-    // In-cluster config (works in Kubernetes) or falls back to local kubeconfig.
-    let client = Client::try_default().await?;
+    // Always start — use a placeholder client when kubeconfig/credentials are missing.
+    // Cluster can be configured later via /api/cluster/kubeconfig.
+    let (client, kube_status) = utils::load_kube_client_with_status().await?;
 
     let username = env::var("USERNAME").unwrap_or_else(|_| "admin".to_string());
     let password = env::var("PASSWORD").unwrap_or_else(|_| "admin".to_string());
     let jwt_secret = env::var("JWT_SECRET").unwrap_or_else(|_| "your-secret-key-change-in-production".to_string());
-    
+
     let port_forward_state = Some(Arc::new(handlers::portforward::PortForwardState::new()));
+    let shared_client = Arc::new(RwLock::new(client));
+    let auth_placeholder = Arc::new(AtomicBool::new(kube_status.is_placeholder));
+    let auth_message = Arc::new(RwLock::new(kube_status.user_message.clone()));
+    let initial_context = env::var("KUBE_CONTEXT").ok().filter(|s| !s.trim().is_empty());
+    let initial_kubeconfig_path = utils::default_kubeconfig_path().display().to_string();
+
+    if kube_status.is_placeholder {
+        info!(
+            message = kube_status.user_message.as_deref().unwrap_or("placeholder"),
+            "Starting with placeholder Kubernetes client; configure cluster via UI"
+        );
+        // Only retry in-process upgrade when a kubeconfig/context already exists
+        // (e.g. exec credential not ready yet). With no kubeconfig, wait for UI upload.
+        if utils::has_resolvable_kube_context() {
+            let client_ref = Arc::clone(&shared_client);
+            let placeholder_ref = Arc::clone(&auth_placeholder);
+            let message_ref = Arc::clone(&auth_message);
+            tokio::spawn(async move {
+                utils::upgrade_kube_client_in_background(client_ref, placeholder_ref, message_ref)
+                    .await;
+            });
+        }
+    }
+
     let state = AppState {
-        client,
+        client: shared_client,
         username,
         password,
         jwt_secret,
         port_forward_state,
         workload_metric_history: Arc::new(RwLock::new(Vec::new())),
+        auth_placeholder,
+        auth_message,
+        current_context: Arc::new(RwLock::new(initial_context)),
+        kubeconfig_path: Arc::new(RwLock::new(initial_kubeconfig_path)),
     };
 
     start_backup_scheduler_worker(state.clone());
@@ -95,6 +151,8 @@ async fn main() -> anyhow::Result<()> {
     let public_api = Router::new()
         .route("/health", get(health))
         .route("/readiness", get(readiness))
+        .route("/auth-status", get(auth_status))
+        .route("/cluster/status", get(cluster_status))
         .route("/login", post(login));
 
     let refresh_api = Router::new()
@@ -105,6 +163,8 @@ async fn main() -> anyhow::Result<()> {
         ));
 
     let protected_api = Router::new()
+        .route("/cluster/kubeconfig", post(upload_kubeconfig))
+        .route("/cluster/select", post(select_cluster_context))
         .route("/dashboard", get(get_dashboard_summary))
         .route("/resource-map", get(get_resource_map))
         .route("/nodes", get(list_nodes))
@@ -365,7 +425,7 @@ async fn main() -> anyhow::Result<()> {
     let config_js = static_dir.join("config.js");
     let favicon_svg = static_dir.join("favicon.svg");
 
-    // Clone client for gRPC server before moving state
+    // Share the replaceable kube client with gRPC (upgrades after kubeconfig upload).
     let grpc_client = state.client.clone();
 
     let app = Router::new()
@@ -445,9 +505,48 @@ async fn normalize_websocket_upgrade_headers(
     next.run(request).await
 }
 
+async fn auth_status(State(state): State<AppState>) -> impl IntoResponse {
+    #[derive(serde::Serialize)]
+    struct AuthStatusResponse {
+        ok: bool,
+        placeholder: bool,
+        message: Option<String>,
+    }
+
+    let placeholder = state.is_auth_placeholder();
+    let message = if placeholder {
+        Some(
+            state.auth_user_message().await.unwrap_or_else(|| {
+                "Upload a kubeconfig to connect to a Kubernetes cluster.".to_string()
+            }),
+        )
+    } else {
+        None
+    };
+
+    (
+        StatusCode::OK,
+        Json(AuthStatusResponse {
+            ok: !placeholder,
+            placeholder,
+            message,
+        }),
+    )
+}
+
 async fn readiness(State(state): State<AppState>) -> impl IntoResponse {
-    // Check if we can connect to Kubernetes API
-    match state.client.apiserver_version().await {
+    // Service is up even without cluster config; readiness reflects cluster connectivity.
+    if state.is_auth_placeholder() {
+        return (
+            StatusCode::SERVICE_UNAVAILABLE,
+            Json(HealthResponse {
+                status: "not ready".into(),
+            }),
+        )
+            .into_response();
+    }
+
+    match state.kube_client().await.apiserver_version().await {
         Ok(_) => {
             let body = HealthResponse {
                 status: "ready".into(),
@@ -456,9 +555,13 @@ async fn readiness(State(state): State<AppState>) -> impl IntoResponse {
         }
         Err(err) => {
             error!("Kubernetes API not reachable: {}", err);
-            (StatusCode::SERVICE_UNAVAILABLE, Json(HealthResponse {
-                status: "not ready".into(),
-            })).into_response()
+            (
+                StatusCode::SERVICE_UNAVAILABLE,
+                Json(HealthResponse {
+                    status: "not ready".into(),
+                }),
+            )
+                .into_response()
         }
     }
 }
