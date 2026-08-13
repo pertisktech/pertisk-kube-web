@@ -201,6 +201,8 @@ make run-ingress-k8s
 | `make helm-package` | Lint and package chart archive to `dist/helm/` |
 | `make helm-push` | Package and push chart archive to OCI registry |
 | `make helm-release` | Full chart release flow (lint -> package -> push) |
+| `make build-release` | Build app image and push the Helm chart release |
+| `make helm-chart-release` | Alias for `build-release` |
 | `make release` | Same as helm-deploy (full release) |
 | `make port-forward` | Forward app service to localhost (APP_PORT / GRPC_PORT) |
 | `make ingress-hosts` | Print ingress host(s) for the release |
