@@ -462,6 +462,30 @@ async fn try_build_client_from_options(options: &KubeConfigOptions) -> Result<Cl
     try_build_client_from_config(cfg).await
 }
 
+async fn try_load_inferred_client_with_timeout(load_timeout: Duration) -> Option<Client> {
+    let load_client = async {
+        let cfg = Config::infer().await.map_err(|e| e.to_string())?;
+        try_build_client_from_config(cfg).await
+    };
+
+    match timeout(load_timeout, load_client).await {
+        Ok(Ok(client)) => Some(client),
+        Ok(Err(e)) => {
+            if !is_missing_exec_error(&e) {
+                warn!("Kubernetes client init from inferred config failed: {}", e);
+            }
+            None
+        }
+        Err(_) => {
+            warn!(
+                "Kubernetes client init from inferred config timed out (>{} s).",
+                load_timeout.as_secs()
+            );
+            None
+        }
+    }
+}
+
 async fn try_load_client_for_context_with_timeout(
     ctx: &str,
     load_timeout: Duration,
@@ -561,6 +585,10 @@ pub async fn load_kube_client_with_status() -> anyhow::Result<(Client, KubeClien
         return build_placeholder_client(Some(ctx))
             .await
             .map(|client| (client, placeholder_status_for_context(Some(ctx))));
+    }
+
+    if let Some(client) = try_load_inferred_client_with_timeout(EXEC_PROVIDER_LOAD_TIMEOUT).await {
+        return Ok((client, KubeClientStatus::default()));
     }
 
     warn!("No Kubernetes context configured; starting with placeholder client.");

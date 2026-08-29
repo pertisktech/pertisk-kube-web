@@ -61,7 +61,7 @@ app:
     failureThreshold: 12
   readinessProbe:
     httpGet:
-      path: /api/readiness
+      path: /api/health
       port: 8091
     initialDelaySeconds: 10
     periodSeconds: 10

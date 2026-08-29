@@ -16,7 +16,7 @@ app:
   image:
     registry: harbor.tools.pertisk.com
     repository: pertisksoft/pertisk-kube/web
-    tag: "v0.2.6"
+    tag: "v0.2.7"
     pullPolicy: Always
   service:
     # ClusterIP (default) — use with Ingress. Or LoadBalancer for direct access via IP:port (no domain).
@@ -86,7 +86,7 @@ app:
     failureThreshold: 12
   readinessProbe:
     httpGet:
-      path: /api/readiness
+      path: /api/health
       port: 8091
     initialDelaySeconds: 10
     periodSeconds: 10
