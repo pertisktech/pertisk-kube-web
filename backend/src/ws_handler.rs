@@ -20,6 +20,7 @@ use std::env;
 use std::sync::{Arc, Mutex};
 use std::io::{Read, Write};
 use std::process::Stdio;
+use std::time::Duration;
 use tokio::{
     io::{AsyncReadExt, AsyncWriteExt},
     process::{Child, ChildStderr, ChildStdin, ChildStdout, Command},
@@ -519,10 +520,27 @@ async fn handle_exec_socket(socket: WebSocket, query: ExecQuery) {
     let (mut ws_sender, mut ws_receiver) = socket.split();
     let (tx, mut rx) = tokio::sync::mpsc::channel::<String>(256);
 
+    // Periodic pings keep the connection alive through idle-timeout proxies (e.g. pertisk-proxy).
     let ws_send_task = tokio::spawn(async move {
-        while let Some(msg) = rx.recv().await {
-            if ws_sender.send(Message::Text(msg)).await.is_err() {
-                break;
+        let mut ping_interval = tokio::time::interval(Duration::from_secs(20));
+        ping_interval.tick().await; // first tick fires immediately; skip it
+        loop {
+            tokio::select! {
+                msg = rx.recv() => {
+                    match msg {
+                        Some(msg) => {
+                            if ws_sender.send(Message::Text(msg)).await.is_err() {
+                                break;
+                            }
+                        }
+                        None => break,
+                    }
+                }
+                _ = ping_interval.tick() => {
+                    if ws_sender.send(Message::Ping(Vec::new())).await.is_err() {
+                        break;
+                    }
+                }
             }
         }
     });
@@ -728,12 +746,29 @@ async fn handle_socket(socket: WebSocket, state: AppState) {
 
     let (tx, mut rx) = tokio::sync::mpsc::channel::<ServerMessage>(100);
 
-    // Spawn task to send messages from channel to WebSocket
+    // Spawn task to send messages from channel to WebSocket, with periodic pings
+    // to keep the connection alive through idle-timeout proxies (e.g. pertisk-proxy).
     let send_task = tokio::spawn(async move {
-        while let Some(msg) = rx.recv().await {
-            if let Ok(json) = serde_json::to_string(&msg) {
-                if sender.send(Message::Text(json)).await.is_err() {
-                    break;
+        let mut ping_interval = tokio::time::interval(Duration::from_secs(20));
+        ping_interval.tick().await; // first tick fires immediately; skip it
+        loop {
+            tokio::select! {
+                msg = rx.recv() => {
+                    match msg {
+                        Some(msg) => {
+                            if let Ok(json) = serde_json::to_string(&msg) {
+                                if sender.send(Message::Text(json)).await.is_err() {
+                                    break;
+                                }
+                            }
+                        }
+                        None => break,
+                    }
+                }
+                _ = ping_interval.tick() => {
+                    if sender.send(Message::Ping(Vec::new())).await.is_err() {
+                        break;
+                    }
                 }
             }
         }
