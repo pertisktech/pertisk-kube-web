@@ -11,7 +11,7 @@
 ARG VERSION=0.0.1
 
 # Base image coordinates (override via --build-arg or Makefile)
-ARG BASE_REGISTRY=harbor.tools.thaidevops.co/pertisksoft/pertisk-kube
+ARG BASE_REGISTRY=harbor.tools.pertisk.com/pertisksoft/pertisk-kube
 ARG BASE_TAG=latest
 
 # ─── Stage 1: Build Frontend (node_modules already in base) ──────────────────

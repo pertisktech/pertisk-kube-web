@@ -98,7 +98,11 @@ async fn main() -> anyhow::Result<()> {
 
     let username = env::var("USERNAME").unwrap_or_else(|_| "admin".to_string());
     let password = env::var("PASSWORD").unwrap_or_else(|_| "admin".to_string());
-    let jwt_secret = env::var("JWT_SECRET").unwrap_or_else(|_| "your-secret-key-change-in-production".to_string());
+    let jwt_secret = env::var("JWT_SECRET").unwrap_or_else(|_| {
+        let generated = uuid::Uuid::new_v4().to_string();
+        info!("JWT_SECRET is not set; generated an ephemeral signing secret for this process");
+        generated
+    });
 
     let port_forward_state = Some(Arc::new(handlers::portforward::PortForwardState::new()));
     let shared_client = Arc::new(RwLock::new(client));

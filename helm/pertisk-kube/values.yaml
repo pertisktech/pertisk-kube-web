@@ -33,8 +33,8 @@ app:
     backupExternalCrdEnabled: "true"
   auth:
     username: admin
-    password: admin
-    jwtSecret: "a64543d6-19cf-11f1-a3d1-768d4c051e08"  # Change this in production!
+    password: "" # Set with --set app.auth.password=... or a private values file
+    jwtSecret: "" # Set with --set app.auth.jwtSecret=... or a private values file
   resources:
     limits:
       cpu: 500m

@@ -217,7 +217,7 @@ Publish the Helm chart to an OCI registry:
 
 ```bash
 # 1) Login once to OCI registry
-helm registry login harbor.tools.thaidevops.co
+helm registry login harbor.tools.pertisk.com
 
 # 2) Run full chart release
 make helm-release
@@ -227,7 +227,7 @@ Optional overrides:
 
 ```bash
 make helm-release \
-  HELM_OCI_REGISTRY=harbor.tools.thaidevops.co \
+  HELM_OCI_REGISTRY=harbor.tools.pertisk.com \
   HELM_OCI_REPOSITORY=pertisksoft/helm-charts
 ```
 
@@ -381,8 +381,8 @@ All API routes are under `/api`. Protected routes require `Authorization: Bearer
 - `GRPC_PORT` - gRPC server port (default: `50061` for local Make targets)
 - `RUST_LOG` - Log level (default: info)
 - `USERNAME` - Dashboard login username (default: admin)
-- `PASSWORD` - Dashboard login password (default: admin)
-- `JWT_SECRET` - Secret key for JWT token signing (default: your-secret-key-change-in-production) ⚠️ **Change in production!**
+- `PASSWORD` - Dashboard login password; set this from a private env file or secret manager
+- `JWT_SECRET` - Secret key for JWT token signing; set this from a private env file or secret manager
 
 ### Token Expiration
 - **JWT Tokens expire after 1 hour** from login
@@ -391,6 +391,8 @@ All API routes are under `/api`. Protected routes require `Authorization: Bearer
 
 ### Helm Values
 - `image.tag` - Container image tag
+- `app.auth.password` - Dashboard login password; required at chart render time
+- `app.auth.jwtSecret` - JWT signing secret; required at chart render time
 - `replicaCount` - Number of dashboard replicas
 - `resources.limits` - Resource limits
 - `resources.requests` - Resource requests

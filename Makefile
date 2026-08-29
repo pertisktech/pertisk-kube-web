@@ -10,12 +10,13 @@ VERSION ?= $(shell V=$$(git describe --tags --always --abbrev=7 2>/dev/null || e
 	else \
 		echo "1.0.0-dev"; \
 	fi)
-DOCKER_REGISTRY ?= harbor.tools.thaidevops.co
+DOCKER_REGISTRY ?= harbor.tools.pertisk.com
 DOCKER_IMAGE ?= $(DOCKER_REGISTRY)/pertisksoft/pertisk-kube/web
 IMAGE_TAG ?=
 DOCKER_TAG ?= $(if $(IMAGE_TAG),$(IMAGE_TAG),$(VERSION))
 BUILD_VERSION ?= $(DOCKER_TAG)
-BASE_IMAGE_PREFIX ?= $(DOCKER_REGISTRY)/pertisksoft/pertisk-kube/web-base
+BASE_REGISTRY ?= $(DOCKER_REGISTRY)/pertisksoft/pertisk-kube
+BASE_IMAGE_PREFIX ?= $(BASE_REGISTRY)/web-base
 BASE_TAG ?= latest
 HELM_RELEASE ?= pertisk-kube
 HELM_NAMESPACE ?= pertisk-rproxy
@@ -30,7 +31,7 @@ GRPC_PORT ?= 50061
 
 .PHONY: dev dev-backend dev-frontend frontend-install frontend-build frontend-build-watch tools fmt build-backend run-monolith run-ingress-k8s
 .PHONY: docker-build docker-build-amd64 docker-build-arm64 docker-build-multi docker-push docker-push-multi
-.PHONY: docker-base-build docker-base-push docker-base-push-multi
+.PHONY: docker-base-build docker-base-push docker-base-push-amd64 docker-base-push-multi
 .PHONY: helm-install helm-upgrade helm-uninstall helm-template helm-deploy port-forward ingress-hosts lb-url
 .PHONY: helm-lint helm-package helm-push helm-release
 .PHONY: build-release helm-chart-release
@@ -130,6 +131,26 @@ docker-base-push: docker-base-build
 	docker push $(BASE_IMAGE_PREFIX)-runtime:$(BASE_TAG)
 	@echo "✓ Base images pushed: $(BASE_IMAGE_PREFIX)-{frontend,backend,runtime}:$(BASE_TAG)"
 
+docker-base-push-amd64:
+	@echo "Building & pushing amd64 base images..."
+	@set -e; \
+	if ! docker buildx inspect multiarch > /dev/null 2>&1; then \
+		docker buildx create --name multiarch --driver docker-container --use; \
+	else \
+		docker buildx use multiarch; \
+	fi; \
+	docker buildx inspect multiarch --bootstrap > /dev/null; \
+	docker buildx build --platform linux/amd64 --target frontend-deps \
+		-f Dockerfile.base --push \
+		-t $(BASE_IMAGE_PREFIX)-frontend:$(BASE_TAG) .; \
+	docker buildx build --platform linux/amd64 --target backend-deps \
+		-f Dockerfile.base --push \
+		-t $(BASE_IMAGE_PREFIX)-backend:$(BASE_TAG) .; \
+	docker buildx build --platform linux/amd64 --target runtime \
+		-f Dockerfile.base --push \
+		-t $(BASE_IMAGE_PREFIX)-runtime:$(BASE_TAG) .; \
+	echo "✓ amd64 base images pushed: $(BASE_IMAGE_PREFIX)-{frontend,backend,runtime}:$(BASE_TAG)"
+
 docker-base-push-multi:
 	@echo "Building & pushing multi-arch base images..."
 	@set -e; \
@@ -154,19 +175,20 @@ docker-base-push-multi:
 docker-build:
 	docker build -f Dockerfile \
 		--build-arg VERSION=$(BUILD_VERSION) \
+		--build-arg BASE_REGISTRY=$(BASE_REGISTRY) \
 		--build-arg BASE_TAG=$(BASE_TAG) \
 		-t $(DOCKER_IMAGE):$(DOCKER_TAG) .
 	@echo "Built: $(DOCKER_IMAGE):$(DOCKER_TAG)"
 
 docker-build-amd64:
 	docker buildx build --platform linux/amd64 -f Dockerfile \
-		--build-arg VERSION=$(BUILD_VERSION) --build-arg BASE_TAG=$(BASE_TAG) \
+		--build-arg VERSION=$(BUILD_VERSION) --build-arg BASE_REGISTRY=$(BASE_REGISTRY) --build-arg BASE_TAG=$(BASE_TAG) \
 		--load -t $(DOCKER_IMAGE):$(DOCKER_TAG)-amd64 -t $(DOCKER_IMAGE):amd64 .
 	@echo "Built: $(DOCKER_IMAGE):$(DOCKER_TAG)-amd64"
 
 docker-build-arm64:
 	docker buildx build --platform linux/arm64 -f Dockerfile \
-		--build-arg VERSION=$(BUILD_VERSION) --build-arg BASE_TAG=$(BASE_TAG) \
+		--build-arg VERSION=$(BUILD_VERSION) --build-arg BASE_REGISTRY=$(BASE_REGISTRY) --build-arg BASE_TAG=$(BASE_TAG) \
 		--load -t $(DOCKER_IMAGE):$(DOCKER_TAG)-arm64 -t $(DOCKER_IMAGE):arm64 .
 	@echo "Built: $(DOCKER_IMAGE):$(DOCKER_TAG)-arm64"
 
@@ -183,7 +205,7 @@ docker-build-multi:
 	echo "Using builder: multiarch"; \
 	docker buildx build --platform linux/amd64,linux/arm64 -f Dockerfile \
 		--provenance=false --sbom=false \
-		--build-arg VERSION=$(BUILD_VERSION) --build-arg BASE_TAG=$(BASE_TAG) --push \
+		--build-arg VERSION=$(BUILD_VERSION) --build-arg BASE_REGISTRY=$(BASE_REGISTRY) --build-arg BASE_TAG=$(BASE_TAG) --push \
 		-t $(DOCKER_IMAGE):$(DOCKER_TAG) \
 		-t $(DOCKER_IMAGE):latest .; \
 	echo "✓ Built and pushed multi-arch: $(DOCKER_IMAGE):$(DOCKER_TAG)"

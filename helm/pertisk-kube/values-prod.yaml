@@ -13,7 +13,7 @@ app:
   name: pertisk-kube
   replicaCount: 3  # Increase replicas for HA
   image:
-    registry: harbor.tools.thaidevops.co
+    registry: harbor.tools.pertisk.com
     repository: pertisksoft/pertisk-kube/web
     tag: v1.0.0  # Use specific version tags instead of latest
     pullPolicy: Always
@@ -26,8 +26,8 @@ app:
     backupExternalCrdEnabled: "true"
   auth:
     username: admin
-    password: admin
-    jwtSecret: "a64543d6-19cf-11f1-a3d1-768d4c051e08"
+    password: "" # Set with --set app.auth.password=... or a private values file
+    jwtSecret: "" # Set with --set app.auth.jwtSecret=... or a private values file
   resources:
     limits:
       cpu: 1000m

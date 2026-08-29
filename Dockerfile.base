@@ -24,6 +24,7 @@ RUN apk add --no-cache build-base pkgconfig openssl-dev openssl-libs-static prot
 
 # Workspace manifest
 COPY Cargo.toml ./Cargo.toml
+COPY Cargo.lock ./Cargo.lock
 
 # Backend manifest + build script + proto (build.rs needs them at compile time)
 RUN mkdir -p backend/src

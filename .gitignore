@@ -17,6 +17,14 @@ pnpm-debug.log*
 .env.*
 !.env.example
 !.env.*.example
+*.kubeconfig
+*kubeconfig*.yaml
+*kubeconfig*.yml
+helm/pertisk-kube/values-*.private.yaml
+helm/pertisk-kube/values-*.private.yml
+helm/pertisk-kube/secrets*.yaml
+helm/pertisk-kube/secrets*.yml
+build/*.local.conf
 
 # --- Rust ---
 target/
