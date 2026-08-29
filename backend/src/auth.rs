@@ -31,6 +31,15 @@ pub struct LoginResponse {
     token: Option<String>,
 }
 
+pub fn validate_jwt_token(token: &str, jwt_secret: &str) -> bool {
+    decode::<Claims>(
+        token,
+        &DecodingKey::from_secret(jwt_secret.as_ref()),
+        &Validation::default(),
+    )
+    .is_ok()
+}
+
 pub async fn login(State(state): State<AppState>, Json(payload): Json<LoginRequest>) -> impl IntoResponse {
     if payload.username == state.username && payload.password == state.password {
         // Create JWT token with 1-hour expiration
@@ -80,14 +89,11 @@ pub async fn require_basic_auth(
     if let Some(auth) = auth_header {
         if auth.starts_with("Bearer ") {
             let token = &auth[7..];
-            match decode::<Claims>(
-                token,
-                &DecodingKey::from_secret(state.jwt_secret.as_ref()),
-                &Validation::default(),
-            ) {
-                Ok(_) => return next.run(request).await,
-                Err(_) => return StatusCode::UNAUTHORIZED.into_response(),
+            if validate_jwt_token(token, &state.jwt_secret) {
+                return next.run(request).await;
             }
+
+            return StatusCode::UNAUTHORIZED.into_response();
         }
     }
 

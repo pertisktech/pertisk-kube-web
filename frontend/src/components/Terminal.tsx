@@ -4,6 +4,7 @@ import { FitAddon } from '@xterm/addon-fit';
 import { WebLinksAddon } from '@xterm/addon-web-links';
 import '@xterm/xterm/css/xterm.css';
 import { useTheme } from '../context/ThemeContext';
+import { getRawAuthToken } from '../utils/auth';
 
 declare global {
   interface Window {
@@ -27,6 +28,7 @@ const buildExecWebSocketUrl = (namespace: string, podName: string, containerName
   };
   const configuredBackendUrl = runtimeConfig.__PERTISK_CONFIG__?.backendUrl?.trim();
   const apiBase = configuredBackendUrl && configuredBackendUrl.length > 0 ? configuredBackendUrl : '/api';
+  const token = getRawAuthToken();
 
   try {
     const backendUrl = new URL(apiBase, globalThis.location.origin);
@@ -42,6 +44,9 @@ const buildExecWebSocketUrl = (namespace: string, podName: string, containerName
     if (containerName) {
       backendUrl.searchParams.set('container', containerName);
     }
+    if (token) {
+      backendUrl.searchParams.set('token', token);
+    }
 
     return backendUrl.toString();
   } catch {
@@ -51,6 +56,9 @@ const buildExecWebSocketUrl = (namespace: string, podName: string, containerName
     fallbackUrl.searchParams.set('pod', podName);
     if (containerName) {
       fallbackUrl.searchParams.set('container', containerName);
+    }
+    if (token) {
+      fallbackUrl.searchParams.set('token', token);
     }
     return fallbackUrl.toString();
   }

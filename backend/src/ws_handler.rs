@@ -4,6 +4,8 @@ use axum::{
         Query,
         State,
     },
+    http::StatusCode,
+    response::IntoResponse,
     response::Response,
 };
 use futures_util::{sink::SinkExt, stream::StreamExt};
@@ -25,6 +27,7 @@ use tokio::{
 };
 use tracing::{error, info, warn};
 
+use crate::auth::validate_jwt_token;
 use crate::AppState;
 
 fn is_forbidden_or_missing_api(err: &kube::Error) -> bool {
@@ -90,6 +93,13 @@ pub struct ExecQuery {
     pub container: Option<String>,
 }
 
+#[derive(Debug, Clone, Deserialize)]
+pub struct ExecWsQuery {
+    #[serde(flatten)]
+    pub exec: ExecQuery,
+    pub token: Option<String>,
+}
+
 fn parse_resize_message(text: &str) -> Option<(u16, u16)> {
     let json = serde_json::from_str::<serde_json::Value>(text).ok()?;
     if json.get("type").and_then(|value| value.as_str()) != Some("resize") {
@@ -133,14 +143,29 @@ pub async fn ws_handler(
 
 pub async fn exec_ws_handler(
     ws: WebSocketUpgrade,
-    Query(query): Query<ExecQuery>,
+    State(state): State<AppState>,
+    Query(query): Query<ExecWsQuery>,
 ) -> Response {
+    let is_authenticated = query
+        .token
+        .as_deref()
+        .map(|token| validate_jwt_token(token, &state.jwt_secret))
+        .unwrap_or(false);
+
+    if !is_authenticated {
+        warn!(
+            "Rejected exec websocket request with missing or expired token: namespace={}, pod={}, container={:?}",
+            query.exec.namespace, query.exec.pod, query.exec.container
+        );
+        return StatusCode::UNAUTHORIZED.into_response();
+    }
+
     info!(
         "New exec websocket request: namespace={}, pod={}, container={:?}",
-        query.namespace, query.pod, query.container
+        query.exec.namespace, query.exec.pod, query.exec.container
     );
 
-    ws.on_upgrade(move |socket| handle_exec_socket(socket, query))
+    ws.on_upgrade(move |socket| handle_exec_socket(socket, query.exec))
 }
 
 async fn spawn_exec_shell(

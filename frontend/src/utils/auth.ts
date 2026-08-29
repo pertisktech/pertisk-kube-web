@@ -28,6 +28,17 @@ export const getAuthToken = () => {
   return token ? `Bearer ${token}` : null;
 };
 
+export const getRawAuthToken = () => {
+  const token = localStorage.getItem(AUTH_TOKEN_KEY);
+
+  if (token && isTokenExpired()) {
+    clearAuth();
+    return null;
+  }
+
+  return token;
+};
+
 export const getAuthUser = () => {
   return localStorage.getItem(AUTH_USER_KEY);
 };
