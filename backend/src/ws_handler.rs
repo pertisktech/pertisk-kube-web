@@ -29,6 +29,7 @@ use tokio::{
 use tracing::{error, info, warn};
 
 use crate::auth::validate_jwt_token;
+use crate::utils;
 use crate::AppState;
 
 fn is_forbidden_or_missing_api(err: &kube::Error) -> bool {
@@ -213,7 +214,11 @@ async fn spawn_exec_shell(
         cmd.env("LANG", "en_US.UTF-8");
         cmd.env("POWERLEVEL9K_DISABLE_CONFIGURATION_WIZARD", "true");
         cmd.env("ZDOTDIR", &home);
-        
+        // kubectl/ktail need a kubeconfig; synthesize from the SA when in-cluster.
+        if let Some(kubeconfig) = utils::ensure_shell_kubeconfig() {
+            cmd.env("KUBECONFIG", kubeconfig);
+        }
+
         // Spawn the shell process
         if let Err(err) = pair.slave.spawn_command(cmd) {
             error!("Failed to spawn zsh: {}", err);
@@ -242,6 +247,9 @@ async fn spawn_exec_shell(
         info!("Connecting to node shell for node: {}", query.pod);
         let debug_namespace = node_debug_namespace();
         let mut cmd = Command::new("kubectl");
+        if let Some(kubeconfig) = utils::ensure_shell_kubeconfig() {
+            cmd.env("KUBECONFIG", kubeconfig);
+        }
         cmd.arg("debug")
             .arg("-n")
             .arg(&debug_namespace)
@@ -308,6 +316,9 @@ async fn spawn_exec_shell(
         };
 
         let mut cmd = CommandBuilder::new("kubectl");
+        if let Some(kubeconfig) = utils::ensure_shell_kubeconfig() {
+            cmd.env("KUBECONFIG", kubeconfig);
+        }
         cmd.arg("exec");
         cmd.arg("-i");
         cmd.arg("-t"); // Works now — we have a real local PTY

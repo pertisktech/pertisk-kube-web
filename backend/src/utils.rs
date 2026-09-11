@@ -685,3 +685,113 @@ async fn build_placeholder_client(context_name: Option<&str>) -> anyhow::Result<
     Ok(client)
 }
 
+const IN_CLUSTER_SA_DIR: &str = "/var/run/secrets/kubernetes.io/serviceaccount";
+const IN_CLUSTER_TOKEN: &str = "/var/run/secrets/kubernetes.io/serviceaccount/token";
+const IN_CLUSTER_CA: &str = "/var/run/secrets/kubernetes.io/serviceaccount/ca.crt";
+
+fn path_exists_nonempty(path: &Path) -> bool {
+    path.is_file()
+}
+
+fn first_existing_kubeconfig_from_env() -> Option<PathBuf> {
+    let raw = env::var("KUBECONFIG").ok()?;
+    raw.split(':')
+        .map(str::trim)
+        .filter(|segment| !segment.is_empty())
+        .map(PathBuf::from)
+        .find(|path| path_exists_nonempty(path))
+}
+
+fn write_in_cluster_kubeconfig(path: &Path) -> std::io::Result<()> {
+    if let Some(parent) = path.parent() {
+        std::fs::create_dir_all(parent)?;
+    }
+
+    // Embed the current SA token so clients that only support `token:` (not tokenFile) work.
+    // Token rotation is rare during a shell session; reopen shell if needed after rotation.
+    let token = std::fs::read_to_string(IN_CLUSTER_TOKEN)?;
+    let token = token.trim();
+    let host = env::var("KUBERNETES_SERVICE_HOST").unwrap_or_else(|_| "kubernetes.default.svc".into());
+    let port = env::var("KUBERNETES_SERVICE_PORT").unwrap_or_else(|_| "443".into());
+    let server = if host.contains(':') {
+        format!("https://[{host}]:{port}")
+    } else {
+        format!("https://{host}:{port}")
+    };
+
+    let content = format!(
+        r#"apiVersion: v1
+kind: Config
+clusters:
+- name: in-cluster
+  cluster:
+    certificate-authority: {ca}
+    server: {server}
+contexts:
+- name: in-cluster
+  context:
+    cluster: in-cluster
+    user: in-cluster
+current-context: in-cluster
+users:
+- name: in-cluster
+  user:
+    token: {token}
+"#,
+        ca = IN_CLUSTER_CA,
+        server = server,
+        token = token,
+    );
+    std::fs::write(path, content)
+}
+
+/// Resolve a kubeconfig path for shell tools (kubectl/ktail).
+/// Prefer an existing config; otherwise synthesize one from the in-cluster service account.
+pub fn ensure_shell_kubeconfig() -> Option<String> {
+    if let Some(path) = first_existing_kubeconfig_from_env() {
+        return Some(path.display().to_string());
+    }
+
+    let default_path = default_kubeconfig_path();
+    if path_exists_nonempty(&default_path) {
+        return Some(default_path.display().to_string());
+    }
+
+    let home = env::var("HOME").unwrap_or_else(|_| "/home/appuser".to_string());
+    let home_config = PathBuf::from(&home).join(".kube/config");
+    if path_exists_nonempty(&home_config) {
+        return Some(home_config.display().to_string());
+    }
+
+    let sa_ready = Path::new(IN_CLUSTER_SA_DIR).is_dir()
+        && path_exists_nonempty(Path::new(IN_CLUSTER_TOKEN))
+        && path_exists_nonempty(Path::new(IN_CLUSTER_CA));
+    if !sa_ready {
+        return None;
+    }
+
+    // Prefer writable home; fall back to /tmp for read-only rootfs.
+    let candidates = [
+        home_config,
+        PathBuf::from("/tmp/pertisk-kube-incluster.kubeconfig"),
+    ];
+    for path in candidates {
+        match write_in_cluster_kubeconfig(&path) {
+            Ok(()) => {
+                // Keep process + child shells aligned.
+                env::set_var("KUBECONFIG", path.display().to_string());
+                return Some(path.display().to_string());
+            }
+            Err(err) => {
+                warn!(
+                    "Failed to write in-cluster kubeconfig at {}: {}",
+                    path.display(),
+                    err
+                );
+            }
+        }
+    }
+
+    None
+}
+

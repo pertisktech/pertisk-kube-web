@@ -95,6 +95,10 @@ async fn main() -> anyhow::Result<()> {
     // Always start — use a placeholder client when kubeconfig/credentials are missing.
     // Cluster can be configured later via /api/cluster/kubeconfig.
     let (client, kube_status) = utils::load_kube_client_with_status().await?;
+    // Make kubectl/ktail work in host shell (in-cluster SA → kubeconfig file).
+    if let Some(path) = utils::ensure_shell_kubeconfig() {
+        info!("Shell kubeconfig ready at {}", path);
+    }
 
     let username = env::var("USERNAME").unwrap_or_else(|_| "admin".to_string());
     let password = env::var("PASSWORD").unwrap_or_else(|_| "admin".to_string());
